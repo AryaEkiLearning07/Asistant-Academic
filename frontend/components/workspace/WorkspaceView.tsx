@@ -442,7 +442,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
               {isSending && (
                 <div className="flex items-center py-2.5 animate-in fade-in duration-200">
                   <div
-                    className={`flex items-center gap-2.5 px-3.5 py-1.5 rounded-full border text-xs shadow-xs transition-all ${
+                    className={`flex items-center gap-2 px-3 py-1.5 rounded-full border text-xs shadow-xs transition-all ${
                       theme === "dark" ? "bg-[#181D22] border-[#2A333B] text-[#DCE3E8]" : "bg-white border-[#E2E8F0] text-[#1E293B]"
                     }`}
                   >
@@ -451,19 +451,12 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                         theme === "dark" ? "text-[#34D3BE]" : "text-[#0F766E]"
                       }`}
                     />
-                    <div className="flex items-center gap-1.5 font-medium text-xs">
+                    <div className="flex items-center font-medium text-xs">
                       <span className={theme === "dark" ? "text-white font-semibold" : "text-[#0F172A] font-semibold"}>
                         Thinking
                       </span>
-                      <span className="flex items-center tracking-widest text-[#9AA9B5] animate-pulse">
+                      <span className="tracking-widest text-[#9AA9B5] animate-pulse ml-0.5">
                         ...
-                      </span>
-                      <span
-                        className={`text-[11px] font-normal pl-1 border-l ${
-                          theme === "dark" ? "border-[#2A333B] text-[#9AA9B5]" : "border-[#E2E8F0] text-[#64748B]"
-                        }`}
-                      >
-                        {sendingStatusText}
                       </span>
                     </div>
                   </div>
