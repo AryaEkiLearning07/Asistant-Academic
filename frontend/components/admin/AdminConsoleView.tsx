@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import {
   ArrowLeft,
   Clock,
@@ -18,12 +18,19 @@ import {
   User,
   Trash2,
   Eye,
+  EyeOff,
   Search,
   Lock,
   Unlock,
   FileText,
   ExternalLink,
   LogOut,
+  Cpu,
+  CheckCircle2,
+  AlertCircle,
+  Key,
+  Zap,
+  Sparkles,
 } from "lucide-react";
 import { UserProfile } from "@/types";
 
@@ -78,6 +85,118 @@ export function AdminConsoleView({
   handleToggleUserStatus,
   apiBase,
 }: AdminConsoleViewProps) {
+  const [aiSettings, setAiSettings] = useState<any | null>(null);
+  const [selectedProvider, setSelectedProvider] = useState<"openrouter" | "gemini" | "groq" | "anthropic">("openrouter");
+  const [providerApiKey, setProviderApiKey] = useState("");
+  const [providerModel, setProviderModel] = useState("google/gemma-4-31b-it:free");
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [testResult, setTestResult] = useState<{ loading: boolean; success?: boolean; latency_ms?: number; message?: string } | null>(null);
+  const [saveStatus, setSaveStatus] = useState<{ loading: boolean; message?: string; success?: boolean } | null>(null);
+
+  useEffect(() => {
+    if (adminActiveTab === "server" && currentUser) {
+      fetch(`${apiBase}/api/v1/settings/ai`, {
+        headers: { Authorization: `Bearer ${currentUser.token}` }
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          setAiSettings(data);
+          if (data.openrouter_active) {
+            setSelectedProvider("openrouter");
+            setProviderModel(data.openrouter_model || "google/gemma-4-31b-it:free");
+          } else if (data.anthropic_active) {
+            setSelectedProvider("anthropic");
+            setProviderModel(data.anthropic_model || "claude-3-5-haiku-20241022");
+          } else if (data.gemini_active) {
+            setSelectedProvider("gemini");
+            setProviderModel(data.gemini_model || "gemini-2.0-flash");
+          } else if (data.groq_active) {
+            setSelectedProvider("groq");
+            setProviderModel(data.groq_model || "llama-3.3-70b-versatile");
+          }
+        })
+        .catch((e) => console.error("Error fetching AI settings:", e));
+    }
+  }, [adminActiveTab, currentUser, apiBase]);
+
+  const handleTestConnection = async () => {
+    if (!providerApiKey.trim()) {
+      setTestResult({ loading: false, success: false, message: "Masukkan API Key terlebih dahulu untuk pengujian." });
+      return;
+    }
+    setTestResult({ loading: true });
+    try {
+      const res = await fetch(`${apiBase}/api/v1/settings/ai/test`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${currentUser.token}`
+        },
+        body: JSON.stringify({
+          provider: selectedProvider,
+          api_key: providerApiKey.trim(),
+          model: providerModel.trim() || undefined
+        })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setTestResult({
+          loading: false,
+          success: true,
+          latency_ms: data.latency_ms,
+          message: `Terhubung live ke ${data.provider} (${data.model}) - Latensi: ${data.latency_ms} ms`
+        });
+      } else {
+        setTestResult({
+          loading: false,
+          success: false,
+          message: data.error || "Gagal menghubungi endpoint provider."
+        });
+      }
+    } catch (err: any) {
+      setTestResult({ loading: false, success: false, message: err?.message || "Koneksi jaringan error." });
+    }
+  };
+
+  const handleSaveAiSettings = async () => {
+    setSaveStatus({ loading: true });
+    try {
+      const payload: any = {};
+      if (selectedProvider === "openrouter") {
+        payload.openrouter_api_key = providerApiKey.trim();
+        payload.openrouter_model = providerModel.trim();
+      } else if (selectedProvider === "gemini") {
+        payload.gemini_api_key = providerApiKey.trim();
+        payload.gemini_model = providerModel.trim();
+      } else if (selectedProvider === "groq") {
+        payload.groq_api_key = providerApiKey.trim();
+        payload.groq_model = providerModel.trim();
+      } else if (selectedProvider === "anthropic") {
+        payload.anthropic_api_key = providerApiKey.trim();
+        payload.anthropic_model = providerModel.trim();
+      }
+
+      const res = await fetch(`${apiBase}/api/v1/settings/ai`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${currentUser.token}`
+        },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setAiSettings(data.ai_status);
+        setSaveStatus({ loading: false, success: true, message: "Pengaturan Engine AI berhasil disimpan dan aktif!" });
+        setTimeout(() => setSaveStatus(null), 4000);
+      } else {
+        setSaveStatus({ loading: false, success: false, message: data.message || "Gagal menyimpan pengaturan." });
+      }
+    } catch (err: any) {
+      setSaveStatus({ loading: false, success: false, message: err?.message || "Gagal menyimpan." });
+    }
+  };
+
   return (
     <div className="flex-1 overflow-y-auto w-full h-full px-4 sm:px-8 lg:px-12 py-6 sm:py-8">
       {/* HEADER ADMIN CONSOLE */}
@@ -828,6 +947,409 @@ export function AdminConsoleView({
               <p className="text-sm font-bold mt-1.5 font-mono text-amber-400">
                 PID: {adminSystemStatus?.process_id || "Active"}
               </p>
+            </div>
+          </div>
+
+          {/* PANEL KONFIGURASI AI ENGINE & MULTI-MODEL GATEWAY */}
+          <div
+            className={`p-5 rounded-2xl border shadow-sm transition-all ${
+              theme === "dark" ? "bg-[#1B2127] border-[#2A333B]" : "bg-white border-[#DCE3E8]"
+            }`}
+          >
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-4 border-b border-inherit">
+              <div className="flex items-center gap-2.5">
+                <div className="w-9 h-9 rounded-xl bg-cyan-500/10 text-cyan-400 flex items-center justify-center shrink-0 border border-cyan-500/20">
+                  <Cpu className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className={`text-sm font-bold font-claude-serif ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`}>
+                    Konfigurasi AI Engine &amp; Multi-Model Gateway
+                  </h3>
+                  <p className={`text-xs ${theme === "dark" ? "text-[#9AA9B5]" : "text-[#5B6B78]"}`}>
+                    Dukungan fleksibel OpenRouter (Free &amp; Claude), Google Gemini (AI Studio), Groq Cloud, dan Anthropic Direct.
+                  </p>
+                </div>
+              </div>
+
+              {/* Status Engine Aktif */}
+              <div className="flex items-center gap-2 shrink-0">
+                <span className="text-[11px] font-medium text-slate-400 hidden sm:inline">Engine Aktif:</span>
+                <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-cyan-500/15 text-cyan-400 border border-cyan-500/30">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse"></span>
+                  {aiSettings?.active_engine || adminSystemStatus?.ai_service?.active_provider || "Menghubungkan..."}
+                </span>
+              </div>
+            </div>
+
+            {/* PILIHAN PROVIDER TAB */}
+            <div className="mt-5 space-y-4">
+              <div className="flex items-center gap-2 overflow-x-auto pb-1 scrollbar-none">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProvider("openrouter");
+                    if (aiSettings?.openrouter_model) setProviderModel(aiSettings.openrouter_model);
+                    else setProviderModel("google/gemma-4-31b-it:free");
+                    setTestResult(null);
+                  }}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition cursor-pointer shrink-0 ${
+                    selectedProvider === "openrouter"
+                      ? "bg-cyan-500/15 border-cyan-500/50 text-cyan-400 shadow-xs"
+                      : theme === "dark"
+                      ? "border-[#2A333B] bg-[#12161A] text-[#9AA9B5] hover:text-[#E6EDF2]"
+                      : "border-[#DCE3E8] bg-slate-50 text-[#5B6B78] hover:text-[#12202B]"
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5" />
+                  <span>OpenRouter Gateway</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-cyan-500/20 text-cyan-300 font-bold">REKOMENDASI</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProvider("gemini");
+                    if (aiSettings?.gemini_model) setProviderModel(aiSettings.gemini_model);
+                    else setProviderModel("gemini-2.0-flash");
+                    setTestResult(null);
+                  }}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition cursor-pointer shrink-0 ${
+                    selectedProvider === "gemini"
+                      ? "bg-teal-500/15 border-teal-500/50 text-teal-400 shadow-xs"
+                      : theme === "dark"
+                      ? "border-[#2A333B] bg-[#12161A] text-[#9AA9B5] hover:text-[#E6EDF2]"
+                      : "border-[#DCE3E8] bg-slate-50 text-[#5B6B78] hover:text-[#12202B]"
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5 text-teal-400" />
+                  <span>Google Gemini (AI Studio)</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-teal-500/20 text-teal-300 font-bold">FREE TIER</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProvider("groq");
+                    if (aiSettings?.groq_model) setProviderModel(aiSettings.groq_model);
+                    else setProviderModel("llama-3.3-70b-versatile");
+                    setTestResult(null);
+                  }}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition cursor-pointer shrink-0 ${
+                    selectedProvider === "groq"
+                      ? "bg-amber-500/15 border-amber-500/50 text-amber-400 shadow-xs"
+                      : theme === "dark"
+                      ? "border-[#2A333B] bg-[#12161A] text-[#9AA9B5] hover:text-[#E6EDF2]"
+                      : "border-[#DCE3E8] bg-slate-50 text-[#5B6B78] hover:text-[#12202B]"
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Groq Cloud (LPU Kilat)</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-amber-500/20 text-amber-300 font-bold">FREE</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedProvider("anthropic");
+                    if (aiSettings?.anthropic_model) setProviderModel(aiSettings.anthropic_model);
+                    else setProviderModel("claude-3-5-haiku-20241022");
+                    setTestResult(null);
+                  }}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition cursor-pointer shrink-0 ${
+                    selectedProvider === "anthropic"
+                      ? "bg-purple-500/15 border-purple-500/50 text-purple-400 shadow-xs"
+                      : theme === "dark"
+                      ? "border-[#2A333B] bg-[#12161A] text-[#9AA9B5] hover:text-[#E6EDF2]"
+                      : "border-[#DCE3E8] bg-slate-50 text-[#5B6B78] hover:text-[#12202B]"
+                  }`}
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                  <span>Anthropic Direct</span>
+                </button>
+              </div>
+
+              {/* PRESET CHIPS REKOMENDASI */}
+              <div className="flex items-center flex-wrap gap-1.5 pt-1">
+                <span className={`text-[11px] font-semibold mr-1 ${theme === "dark" ? "text-[#9AA9B5]" : "text-[#5B6B78]"}`}>
+                  Preset Model:
+                </span>
+                {selectedProvider === "openrouter" && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("google/gemma-4-31b-it:free")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "google/gemma-4-31b-it:free"
+                          ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-300 font-bold"
+                          : "border-slate-700 hover:border-cyan-500/40 text-slate-300"
+                      }`}
+                    >
+                      Gemma 4 31B (Free Tier)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+                          ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-300 font-bold"
+                          : "border-slate-700 hover:border-cyan-500/40 text-slate-300"
+                      }`}
+                    >
+                      Nemotron Reasoning (Free)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("anthropic/claude-3.5-haiku")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "anthropic/claude-3.5-haiku"
+                          ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-300 font-bold"
+                          : "border-slate-700 hover:border-cyan-500/40 text-slate-300"
+                      }`}
+                    >
+                      Claude 3.5 Haiku (Hemat)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("anthropic/claude-3.5-sonnet")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "anthropic/claude-3.5-sonnet"
+                          ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-300 font-bold"
+                          : "border-slate-700 hover:border-cyan-500/40 text-slate-300"
+                      }`}
+                    >
+                      Claude 3.5 Sonnet (Flagship)
+                    </button>
+                  </>
+                )}
+
+                {selectedProvider === "gemini" && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("gemini-2.0-flash")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "gemini-2.0-flash"
+                          ? "bg-teal-500/20 border-teal-500/40 text-teal-300 font-bold"
+                          : "border-slate-700 hover:border-teal-500/40 text-slate-300"
+                      }`}
+                    >
+                      Gemini 2.0 Flash (Generasi Terbaru)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("gemini-1.5-flash")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "gemini-1.5-flash"
+                          ? "bg-teal-500/20 border-teal-500/40 text-teal-300 font-bold"
+                          : "border-slate-700 hover:border-teal-500/40 text-slate-300"
+                      }`}
+                    >
+                      Gemini 1.5 Flash (Stabil)
+                    </button>
+                  </>
+                )}
+
+                {selectedProvider === "groq" && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("llama-3.3-70b-versatile")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "llama-3.3-70b-versatile"
+                          ? "bg-amber-500/20 border-amber-500/40 text-amber-300 font-bold"
+                          : "border-slate-700 hover:border-amber-500/40 text-slate-300"
+                      }`}
+                    >
+                      Llama 3.3 70B Versatile
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("llama-3.1-8b-instant")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "llama-3.1-8b-instant"
+                          ? "bg-amber-500/20 border-amber-500/40 text-amber-300 font-bold"
+                          : "border-slate-700 hover:border-amber-500/40 text-slate-300"
+                      }`}
+                    >
+                      Llama 3.1 8B Instant
+                    </button>
+                  </>
+                )}
+
+                {selectedProvider === "anthropic" && (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("claude-3-5-haiku-20241022")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "claude-3-5-haiku-20241022"
+                          ? "bg-purple-500/20 border-purple-500/40 text-purple-300 font-bold"
+                          : "border-slate-700 hover:border-purple-500/40 text-slate-300"
+                      }`}
+                    >
+                      Claude 3.5 Haiku
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setProviderModel("claude-3-5-sonnet-20241022")}
+                      className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                        providerModel === "claude-3-5-sonnet-20241022"
+                          ? "bg-purple-500/20 border-purple-500/40 text-purple-300 font-bold"
+                          : "border-slate-700 hover:border-purple-500/40 text-slate-300"
+                      }`}
+                    >
+                      Claude 3.5 Sonnet
+                    </button>
+                  </>
+                )}
+              </div>
+
+              {/* INPUT FIELDS */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2">
+                <div>
+                  <label className={`block text-xs font-semibold mb-1.5 ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`}>
+                    Nama Model AI
+                  </label>
+                  <input
+                    type="text"
+                    value={providerModel}
+                    onChange={(e) => setProviderModel(e.target.value)}
+                    placeholder="Contoh: google/gemma-4-31b-it:free"
+                    className={`w-full px-3.5 py-2 rounded-xl text-xs border font-mono transition focus:outline-none focus:ring-2 focus:ring-cyan-500 ${
+                      theme === "dark"
+                        ? "bg-[#12161A] border-[#2A333B] text-[#E6EDF2]"
+                        : "bg-white border-[#DCE3E8] text-[#12202B]"
+                    }`}
+                  />
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between mb-1.5">
+                    <label className={`block text-xs font-semibold ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`}>
+                      API Key Provider
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setShowApiKey(!showApiKey)}
+                      className="text-[11px] text-cyan-400 hover:underline flex items-center gap-1 cursor-pointer"
+                    >
+                      {showApiKey ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+                      <span>{showApiKey ? "Sembunyikan" : "Perlihatkan"}</span>
+                    </button>
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={showApiKey ? "text" : "password"}
+                      value={providerApiKey}
+                      onChange={(e) => setProviderApiKey(e.target.value)}
+                      placeholder={
+                        selectedProvider === "openrouter"
+                          ? "sk-or-v1-..."
+                          : selectedProvider === "gemini"
+                          ? "AIzaSy..."
+                          : selectedProvider === "groq"
+                          ? "gsk_..."
+                          : "sk-ant-..."
+                      }
+                      className={`w-full px-3.5 py-2 rounded-xl text-xs border font-mono transition focus:outline-none focus:ring-2 focus:ring-cyan-500 ${
+                        theme === "dark"
+                          ? "bg-[#12161A] border-[#2A333B] text-[#E6EDF2]"
+                          : "bg-white border-[#DCE3E8] text-[#12202B]"
+                      }`}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* HELPER GUIDE LINK */}
+              <div className={`text-[11px] flex items-center justify-between ${theme === "dark" ? "text-[#9AA9B5]" : "text-[#5B6B78]"}`}>
+                <span>
+                  {selectedProvider === "openrouter" && "Dapatkan key gratis di openrouter.ai/keys (pilih model :free untuk 0 biaya)."}
+                  {selectedProvider === "gemini" && "Dapatkan key resmi 100% gratis tanpa kartu kredit di aistudio.google.com/app/apikey."}
+                  {selectedProvider === "groq" && "Dapatkan key gratis super cepat di console.groq.com/keys."}
+                  {selectedProvider === "anthropic" && "Dapatkan key resmi di console.anthropic.com."}
+                </span>
+                <span className="font-semibold text-cyan-400">Tersimpan persisten di backend .env</span>
+              </div>
+
+              {/* STATUS HASIL TEST */}
+              {testResult && (
+                <div
+                  className={`p-3 rounded-xl border text-xs flex items-center justify-between ${
+                    testResult.loading
+                      ? "bg-cyan-500/10 border-cyan-500/20 text-cyan-300"
+                      : testResult.success
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-semibold"
+                      : "bg-rose-500/10 border-rose-500/30 text-rose-400 font-semibold"
+                  }`}
+                >
+                  <div className="flex items-center gap-2">
+                    {testResult.loading ? (
+                      <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                    ) : testResult.success ? (
+                      <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                    )}
+                    <span>
+                      {testResult.loading ? "Menguji koneksi live ping ke endpoint provider..." : testResult.message}
+                    </span>
+                  </div>
+                  {testResult.latency_ms !== undefined && !testResult.loading && (
+                    <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300">
+                      {testResult.latency_ms} ms
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {saveStatus && (
+                <div
+                  className={`p-3 rounded-xl border text-xs flex items-center gap-2 ${
+                    saveStatus.loading
+                      ? "bg-cyan-500/10 border-cyan-500/20 text-cyan-300"
+                      : saveStatus.success
+                      ? "bg-emerald-500/10 border-emerald-500/30 text-emerald-400 font-semibold"
+                      : "bg-rose-500/10 border-rose-500/30 text-rose-400 font-semibold"
+                  }`}
+                >
+                  {saveStatus.loading ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-cyan-400" />
+                  ) : saveStatus.success ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-rose-400" />
+                  )}
+                  <span>{saveStatus.loading ? "Menyimpan konfigurasi..." : saveStatus.message}</span>
+                </div>
+              )}
+
+              {/* ACTION BUTTONS */}
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={handleTestConnection}
+                  disabled={testResult?.loading}
+                  className={`flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-bold border transition cursor-pointer disabled:opacity-50 ${
+                    theme === "dark"
+                      ? "border-[#2A333B] bg-[#12161A] hover:bg-[#2A333B] text-[#E6EDF2]"
+                      : "border-[#DCE3E8] bg-slate-50 hover:bg-slate-100 text-[#12202B]"
+                  }`}
+                >
+                  <RefreshCw className={`w-3.5 h-3.5 ${testResult?.loading ? "animate-spin text-cyan-400" : ""}`} />
+                  <span>Uji Koneksi (Live Ping)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleSaveAiSettings}
+                  disabled={saveStatus?.loading}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-xs font-bold transition cursor-pointer bg-cyan-600 hover:bg-cyan-500 text-white shadow-xs disabled:opacity-50"
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5" />
+                  <span>Simpan &amp; Terapkan Engine</span>
+                </button>
+              </div>
             </div>
           </div>
 

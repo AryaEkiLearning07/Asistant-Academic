@@ -784,49 +784,91 @@ def rename_chat(session_id: str, payload: RenameSessionRequest, current_user: di
     storage_mgr.update_chat_session_title(session_id, new_title)
     return {"message": "Judul percakapan berhasil diperbarui.", "title": new_title}
 
-# --- PENGATURAN AI ENGINE (GEMINI NOTEBOOKLM & GROQ) ---
+# --- PENGATURAN AI ENGINE (OPENROUTER, ANTHROPIC, GEMINI & GROQ) ---
 class UpdateAiSettingsRequest(BaseModel):
     gemini_api_key: Optional[str] = None
+    gemini_model: Optional[str] = None
     groq_api_key: Optional[str] = None
+    groq_model: Optional[str] = None
+    openrouter_api_key: Optional[str] = None
+    openrouter_model: Optional[str] = None
+    anthropic_api_key: Optional[str] = None
+    anthropic_model: Optional[str] = None
+
+class TestAiConnectionRequest(BaseModel):
+    provider: str
+    api_key: str
+    model: Optional[str] = None
+    base_url: Optional[str] = None
 
 @app.get("/api/v1/settings/ai")
 def get_ai_settings(current_user: dict = Depends(get_current_user)):
-    """Mengambil status engine AI aktif (Gemini / Groq / Lokal)."""
+    """Mengambil status engine AI aktif (OpenRouter / Anthropic / Gemini / Groq / Lokal)."""
     return ai_service.get_status()
+
+@app.post("/api/v1/settings/ai/test")
+def test_ai_connection(payload: TestAiConnectionRequest, current_user: dict = Depends(get_current_user)):
+    """Uji konektivitas live ke provider AI secara langsung."""
+    return ai_service.test_connection(
+        provider=payload.provider,
+        api_key=payload.api_key,
+        model=payload.model,
+        base_url=payload.base_url
+    )
 
 @app.post("/api/v1/settings/ai")
 def update_ai_settings(payload: UpdateAiSettingsRequest, current_user: dict = Depends(get_current_user)):
-    """Menyimpan atau memperbarui API Key AI secara runtime."""
+    """Menyimpan atau memperbarui konfigurasi AI Engine secara runtime dan persisten ke file .env."""
     ai_service.update_keys(
         gemini_key=payload.gemini_api_key,
-        groq_key=payload.groq_api_key
+        gemini_model=payload.gemini_model,
+        groq_key=payload.groq_api_key,
+        groq_model=payload.groq_model,
+        openrouter_key=payload.openrouter_api_key,
+        openrouter_model=payload.openrouter_model,
+        anthropic_key=payload.anthropic_api_key,
+        anthropic_model=payload.anthropic_model
     )
     from app.config import ROOT_DIR
-    env_path = ROOT_DIR / ".env"
-    try:
-        env_lines = []
-        if env_path.exists():
-            env_lines = env_path.read_text(encoding="utf-8").splitlines()
-        
-        env_dict = {}
-        for line in env_lines:
-            if "=" in line and not line.strip().startswith("#"):
-                k, v = line.split("=", 1)
-                env_dict[k.strip()] = v.strip()
-        
-        if payload.gemini_api_key is not None:
-            env_dict["GEMINI_API_KEY"] = payload.gemini_api_key.strip()
-        if payload.groq_api_key is not None:
-            env_dict["GROQ_API_KEY"] = payload.groq_api_key.strip()
+    env_paths = [ROOT_DIR / ".env", ROOT_DIR / "backend" / ".env"]
+    for env_path in env_paths:
+        try:
+            env_lines = []
+            if env_path.exists():
+                env_lines = env_path.read_text(encoding="utf-8").splitlines()
             
-        out_content = "\n".join([f"{k}={v}" for k, v in env_dict.items()]) + "\n"
-        env_path.write_text(out_content, encoding="utf-8")
-    except Exception as e:
-        print(f"[ENV SAVE WARN] {e}")
+            env_dict = {}
+            for line in env_lines:
+                if "=" in line and not line.strip().startswith("#"):
+                    k, v = line.split("=", 1)
+                    env_dict[k.strip()] = v.strip()
+            
+            if payload.gemini_api_key is not None:
+                env_dict["GEMINI_API_KEY"] = payload.gemini_api_key.strip()
+                env_dict["GEMINI_API_KEYS"] = payload.gemini_api_key.strip()
+            if payload.gemini_model is not None:
+                env_dict["GEMINI_MODEL"] = payload.gemini_model.strip()
+            if payload.groq_api_key is not None:
+                env_dict["GROQ_API_KEY"] = payload.groq_api_key.strip()
+            if payload.groq_model is not None:
+                env_dict["GROQ_MODEL"] = payload.groq_model.strip()
+            if payload.openrouter_api_key is not None:
+                env_dict["OPENROUTER_API_KEY"] = payload.openrouter_api_key.strip()
+            if payload.openrouter_model is not None:
+                env_dict["OPENROUTER_MODEL"] = payload.openrouter_model.strip()
+            if payload.anthropic_api_key is not None:
+                env_dict["ANTHROPIC_API_KEY"] = payload.anthropic_api_key.strip()
+            if payload.anthropic_model is not None:
+                env_dict["ANTHROPIC_MODEL"] = payload.anthropic_model.strip()
+                
+            out_content = "\n".join([f"{k}={v}" for k, v in env_dict.items()]) + "\n"
+            env_path.write_text(out_content, encoding="utf-8")
+        except Exception as e:
+            print(f"[ENV SAVE WARN] {e}")
 
     return {
         "status": "success",
-        "message": "Pengaturan AI Engine berhasil disimpan dan aktif.",
+        "message": "Pengaturan AI Engine berhasil disimpan dan aktif secara runtime.",
         "ai_status": ai_service.get_status()
     }
 
