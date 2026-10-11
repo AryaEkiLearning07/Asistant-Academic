@@ -1138,7 +1138,7 @@ export default function AppRoot() {
           />
         )}
 
-        {currentNav === "admin" && (
+        {currentNav === "admin" && currentUser?.role === "admin" && (
           <AdminConsoleView
             theme={theme}
             currentUser={currentUser}
