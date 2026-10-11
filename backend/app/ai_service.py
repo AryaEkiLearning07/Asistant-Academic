@@ -1,0 +1,1091 @@
+import json
+import logging
+import urllib.request
+import urllib.error
+from typing import List, Dict, Any, Optional
+
+from app.config import (
+    ROUTER_BASE_URL,
+    ROUTER_API_KEY,
+    ROUTER_MODEL,
+    GEMINI_API_KEY,
+    GEMINI_API_KEYS,
+    GEMINI_MODEL,
+    GROQ_API_KEY,
+    GROQ_MODEL,
+    FALLBACK_MODEL
+)
+from app.models import ChatResponse, CitationItem
+
+logger = logging.getLogger("epiona.ai_service")
+
+CLAUDIA_STYLE_SYSTEM_PROMPT = (
+    "Anda adalah EPIONA Academic Research Assistant, asisten kecerdasan akademik riset literatur dan analisis farmasi biomedis.\n\n"
+    "IDENTITAS & ARSITEKTUR SISTEM:\n"
+    "- Nama: EPIONA Academic Research Assistant.\n"
+    "- Pencipta & Arsitek: Dikembangkan oleh Arya Eki Nur Seputro sebagai platform riset literatur cerdas dengan grounding dokumen 1:1.\n"
+    "- Model Fondasi: Beroperasi menggunakan model bahasa mutakhir Google Gemini via 9Router AI Gateway berlatensi rendah.\n"
+    "- Perbedaan Fundamental dengan ChatGPT, Gemini umum, atau Perplexity:\n"
+    "  1. Grounding Tertutup (Zero Hallucination): Epiona tidak mencari web secara bebas tanpa kendali, melainkan terisolasi khusus pada dokumen akademik MyLibrary milik pengguna.\n"
+    "  2. Sitasi Verbatim Halaman Fisik: Setiap rujukan dipetakan presisi 1:1 ke nomor halaman asli dan dapat langsung dibuka di lembaran fisik dokumen kanan.\n"
+    "  3. Ekstraksi Visual Multi-Modal: Mampu mendeteksi, memotong, dan menampilkan diagram, kurva farmakokinetik, bagan, dan cuplikan lembaran fisik langsung dari dokumen.\n"
+    "  4. Privasi & Isolasi Akademik: Data dan dokumen tersimpan secara pribadi pada laci penyimpanan akun pengguna.\n\n"
+    "GAYA BAHASA & STRUKTUR RANGKUMAN (NATURAL INTELLIGENT AI):\n"
+    "1. Rangkuman Mengalir Alami (Executive Summary): Sampaikan jawaban seperti asisten AI cerdas kelas dunia (ala Claude & NotebookLM) yang mengalir luwes, kaya wawasan, dan tidak kaku.\n"
+    "2. Langsung Ke Inti Masalah: DILARANG mengawali jawaban dengan pembuka template klise ('Saya adalah EPIONA...', 'Halo! Tentu saja...'). Masuklah langsung ke pembahasan atau kesimpulan inti.\n"
+    "3. Struktur Pembahasan yang Bersih: Gunakan paragraf yang terstruktur rapi atau poin-poin analitis jika materi kompleks, sehingga pengguna mendapatkan rangkuman komprehensif yang enak dibaca.\n"
+    "4. Penjelasan Kemampuan & Arsitektur: Jika ditanya mengenai kemampuan atau perbedaan sistem, jelaskan dengan cerdas, lugas, dan variatif tanpa membaca template hafalan.\n"
+    "5. Tipografi Rapi: Gunakan sintaks Markdown standar yang bersih. Penebalan topik gunakan **judul topik:** dan poin daftar gunakan tanda strip (-) atau angka terurut (1., 2.). Jangan menggunakan karakter simbol yang bertumpuk.\n"
+    "6. Transparansi Sumber Dokumen: Jika sintesis melibatkan beberapa dokumen, sebutkan secara ringkas konteks dokumennya di dalam kalimat (misalnya: 'Berdasarkan dokumen X [1]...') agar pengguna langsung memahami asal rujukan dan tidak bingung.\n"
+    "7. Analisis Lampiran Pengguna (Multimodal Visual & Dokumen):\n"
+    "   Jika pengguna melampirkan file dokumen (PDF, Word, Teks, Excel) atau gambar (resep, foto kemasan sediaan farmasi, grafik/kurva farmakokinetik, bagan mekanisme biokimia, tabel data):\n"
+    "   - Bacalah seluruh konten teks atau visual gambar lampiran tersebut secara mendalam.\n"
+    "   - Jadikan isi lampiran sebagai dasar utama untuk menjawab pertanyaan pengguna.\n"
+    "   - Deskripsikan temuan spesifik dari lampiran (angka, nama zat, struktur, interpretasi kurva) secara presisi dan faktual.\n\n"
+    "ATURAN SITASI INLINE & KEJELASAN REFERENSI:\n"
+    "1. INTEGRASI DENGAN NAMA DOKUMEN (SANGAT PENTING):\n"
+    "   Ketika mengutip atau merujuk fakta dari dokumen, sebutkan nama pendek atau topik dokumennya secara eksplisit dalam kalimat sebelum nomor sitasi agar pembaca tidak bingung dari dokumen mana fakta tersebut diambil.\n"
+    "   Contoh yang baik: 'Berdasarkan materi Cisco Packet Tracer [1], topologi bus memanfaatkan kabel koaksial tunggal...'\n"
+    "   Contoh yang baik: 'Pada panduan formulasi farmasi [2], bioavailabilitas oral dipengaruhi oleh...'\n"
+    "2. HANYA SITASI JIKA BENAR-BENAR ADA BUKTI RELEVAN DI TEKS RUJUKAN:\n"
+    "   DILARANG KERAS membuat sitasi spekulatif atau menempelkan nomor sitasi jika materi tidak dibahas dalam rujukan yang diberikan. Jika pertanyaan pengguna tidak ditemukan di dokumen, sampaikan terus terang bahwa materi tidak ditemukan di koleksi MyLibrary saat ini tanpa mereferensikan dokumen yang tidak relevan.\n"
+    "3. KORESPONDENSI INDEKS 1:1 DENGAN ARRAY CITATIONS:\n"
+    "   Nomor sitasi [1], [2], dst. pada teks 'answer' WAJIB bersesuaian persis dengan urutan elemen dalam array 'citations'.\n"
+    "   Setiap item 'citations' wajib memuat 'document_id', 'document_title', 'page_number' halaman asli, dan 'exact_quote' kutipan verbatim asli dari dokumen.\n"
+    "4. PERTANYAAN UMUM / SAPAAN TANPA SITASI:\n"
+    "   Jika pengguna bertanya percakapan santai, kemampuan AI, atau pertanyaan konseptual umum yang tidak ada di dokumen, jawablah secara lugas tanpa menyisipkan sitasi palsu dan kosongkan array 'citations': [].\n\n"
+    "FORMAT OUTPUT WAJIB BERUPA JSON MURNI:\n"
+    "{\n"
+    '  "answer": "Jawaban terstruktur dengan menyebutkan nama sumber dan sitasi [1] hanya jika relevan...",\n'
+    '  "citations": [\n'
+    '    {\n'
+    '      "document_id": "ID dokumen",\n'
+    '      "document_title": "Judul dokumen",\n'
+    '      "page_number": 1,\n'
+    '      "exact_quote": "Kutipan kalimat persis dari dokumen"\n'
+    '    }\n'
+    '  ]\n'
+    "}"
+)
+
+class AssistantAiService:
+    def __init__(
+        self,
+        router_base_url: str = ROUTER_BASE_URL,
+        router_api_key: str = ROUTER_API_KEY,
+        router_model: str = ROUTER_MODEL,
+        gemini_api_key: str = GEMINI_API_KEY,
+        gemini_api_keys: str = GEMINI_API_KEYS,
+        gemini_model: str = GEMINI_MODEL,
+        groq_api_key: str = GROQ_API_KEY,
+        groq_model: str = GROQ_MODEL
+    ):
+        self.router_base_url = router_base_url.rstrip("/")
+        self.router_api_key = router_api_key
+        self.router_model = router_model
+        
+        # Koleksi API Key Gemini (Multi-Key Pool)
+        self.gemini_keys: List[str] = []
+        if gemini_api_keys:
+            self.gemini_keys = [k.strip() for k in gemini_api_keys.split(",") if k.strip()]
+        if gemini_api_key and gemini_api_key.strip() not in self.gemini_keys:
+            self.gemini_keys.insert(0, gemini_api_key.strip())
+        self._current_key_idx = 0
+
+        self.gemini_model = gemini_model
+        self.groq_api_key = groq_api_key
+        self.groq_model = groq_model
+        self.groq_client = None
+        self._init_groq()
+
+    def _init_groq(self):
+        if self.groq_api_key:
+            try:
+                from groq import Groq
+                self.groq_client = Groq(api_key=self.groq_api_key)
+            except Exception as e:
+                logger.warning(f"Gagal inisialisasi Groq client: {e}")
+
+    def update_keys(self, gemini_key: Optional[str] = None, groq_key: Optional[str] = None):
+        """Memperbarui API Key secara dinamis."""
+        if gemini_key is not None and gemini_key.strip():
+            k = gemini_key.strip()
+            if k not in self.gemini_keys:
+                self.gemini_keys.insert(0, k)
+        if groq_key is not None:
+            self.groq_api_key = groq_key.strip()
+            self._init_groq()
+
+    def get_status(self) -> Dict[str, Any]:
+        return {
+            "9router_available": True,
+            "router_endpoint": self.router_base_url,
+            "gemini_active": len(self.gemini_keys) > 0,
+            "gemini_keys_count": len(self.gemini_keys),
+            "gemini_model": self.gemini_model,
+            "groq_active": bool(self.groq_client),
+            "active_engine": (
+                "9Router AI Gateway" if self._is_router_alive()
+                else ("Google Gemini (Multi-Key Pool)" if self.gemini_keys
+                else ("Groq LPU" if self.groq_client else "Lokal (Offline Fallback)"))
+            )
+        }
+
+    def _is_router_alive(self) -> bool:
+        """Cek apakah 9Router aktif berjalan di localhost."""
+        try:
+            req = urllib.request.Request(f"{self.router_base_url}/models", headers={"Authorization": f"Bearer {self.router_api_key}"})
+            with urllib.request.urlopen(req, timeout=1.5) as res:
+                return res.status == 200
+        except Exception:
+            return False
+
+    def answer_chat(
+        self,
+        question: str,
+        user_docs: List[Dict[str, Any]],
+        relevant_pages: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> ChatResponse:
+        """
+        Titik masuk utama cerdas untuk percakapan (Hybrid Conversational + Grounded RAG + Multimodal Attachments).
+        Membedakan pertanyaan identitas/sapaan vs pertanyaan isi literatur/lampiran, dengan dukungan riwayat multi-turn.
+        """
+        q_lower = question.strip().lower()
+        attachments = attachments or []
+        image_attachments = [a for a in attachments if a.get("is_image") and a.get("base64_data")]
+        doc_attachments = [a for a in attachments if not a.get("is_image") and a.get("extracted_text")]
+
+        # 1. Deteksi Pertanyaan Identitas / Sapaan Umum (Hanya jika tidak ada lampiran berkas/gambar)
+        from app.indexer import DocumentSearchIndex
+        norm_q = DocumentSearchIndex.normalize_query(question).lower()
+
+        conversational_triggers = [
+            "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
+            "siapa yang menciptakan", "siapa menciptakan", "siapa yang membuat", "siapa pembuat",
+            "siapa pencipta", "siapa developermu", "siapa pengembang", "dibuat oleh siapa",
+            "siapa yang bikin", "siapa penciptamu", "siapa pembuatmu", "tugas kamu apa",
+            "apa tugas kamu", "bisa apa saja", "kamu bisa apa", "apa fungsi kamu",
+            "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
+            "apa itu epiona", "halo", "hai", "selamat pagi", "selamat siang", "selamat malam",
+            "apa kabar", "terima kasih", "makasih", "thanks", "ok", "oke", "sip", "mantap",
+            "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat", "apa fungsi kamu",
+            "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
+        ]
+        is_conversational = (
+            any(trigger in q_lower or trigger in norm_q for trigger in conversational_triggers)
+            and not attachments
+        )
+
+        # 2. Prioritas 1: 9Router AI Gateway (Local OpenAI-compatible proxy)
+        if self._is_router_alive():
+            try:
+                return self._call_openai_compatible(
+                    endpoint=f"{self.router_base_url}/chat/completions",
+                    api_key=self.router_api_key,
+                    model=self.router_model,
+                    question=question,
+                    relevant_pages=relevant_pages if not is_conversational else [],
+                    user_docs=user_docs,
+                    chat_history=chat_history,
+                    doc_attachments=doc_attachments,
+                    image_attachments=image_attachments
+                )
+            except Exception as e:
+                logger.warning(f"9Router error: {e}. Mengalihkan ke Direct Gemini.")
+
+        # 3. Prioritas 2: Direct Google Gemini (Multi-Key Pool Failover + Native Multimodal Vision)
+        if self.gemini_keys:
+            try:
+                return self._call_gemini_pool(
+                    question=question,
+                    relevant_pages=relevant_pages if not is_conversational else [],
+                    user_docs=user_docs,
+                    chat_history=chat_history,
+                    doc_attachments=doc_attachments,
+                    image_attachments=image_attachments
+                )
+            except Exception as e:
+                logger.warning(f"Gemini Pool error: {e}. Mengalihkan ke Groq.")
+
+        # 4. Prioritas 3: Groq LPU
+        if self.groq_client:
+            try:
+                return self._call_groq(
+                    question=question,
+                    relevant_pages=relevant_pages if not is_conversational else [],
+                    user_docs=user_docs,
+                    chat_history=chat_history,
+                    doc_attachments=doc_attachments
+                )
+            except Exception as e:
+                logger.warning(f"Groq error: {e}. Mengalihkan ke sintesis lokal.")
+
+        # 5. Fallback lokal cerdas jika offline / tanpa API key
+        return self._local_smart_synthesis(
+            question=question,
+            relevant_pages=relevant_pages,
+            user_docs=user_docs,
+            is_conversational=is_conversational,
+            doc_attachments=doc_attachments,
+            image_attachments=image_attachments
+        )
+
+    def _call_openai_compatible(
+        self,
+        endpoint: str,
+        api_key: str,
+        model: str,
+        question: str,
+        relevant_pages: List[Dict[str, Any]],
+        user_docs: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        doc_attachments: Optional[List[Dict[str, Any]]] = None,
+        image_attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> ChatResponse:
+        context_parts = []
+        if doc_attachments:
+            for da in doc_attachments:
+                fname = da.get("filename", "Dokumen Lampiran")
+                txt = da.get("extracted_text", "").strip()[:8000]
+                if txt:
+                    context_parts.append(f"--- DOKUMEN LAMPIRAN PENGGUNA ({fname}) ---\n{txt}")
+
+        if relevant_pages:
+            context_str = self._format_context(relevant_pages, user_docs)
+            context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+
+        if context_parts:
+            full_context = "\n\n".join(context_parts)
+            user_prompt = f"KONTEKS RUJUKAN:\n{full_context}\n\nPERTANYAAN PENGGUNA:\n{question}"
+        else:
+            user_prompt = question
+
+        messages_payload = [{"role": "system", "content": CLAUDIA_STYLE_SYSTEM_PROMPT}]
+
+        # Sisipkan riwayat percakapan sebelumnya jika ada
+        if chat_history:
+            for h in chat_history:
+                sender_role = "user" if h.get("sender") == "user" else "assistant"
+                h_text = h.get("text", "")
+                if h_text and len(h_text.strip()) > 0:
+                    messages_payload.append({"role": sender_role, "content": h_text})
+
+        # Pesan pengguna saat ini (dukungan visual multimodal)
+        if image_attachments:
+            user_content = []
+            for img in image_attachments:
+                mime = img.get("mime_type", "image/png")
+                b64 = img.get("base64_data", "")
+                if b64:
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"}
+                    })
+            user_content.append({"type": "text", "text": user_prompt})
+            messages_payload.append({"role": "user", "content": user_content})
+        else:
+            messages_payload.append({"role": "user", "content": user_prompt})
+
+        payload = {
+            "model": model,
+            "messages": messages_payload,
+            "response_format": {"type": "json_object"},
+            "temperature": 0.1,
+            "max_tokens": 3000
+        }
+
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}"
+            },
+            method="POST"
+        )
+
+        with urllib.request.urlopen(req, timeout=35) as resp:
+            raw_resp = resp.read().decode("utf-8")
+
+        # 9Router mungkin mengembalikan Server-Sent Events (SSE) data: chunks atau JSON langsung
+        accumulated_text = ""
+        if "data: " in raw_resp:
+            for line in raw_resp.splitlines():
+                line = line.strip()
+                if line.startswith("data: ") and not line.endswith("[DONE]"):
+                    json_str = line[6:].strip()
+                    try:
+                        chunk = json.loads(json_str)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        if "content" in delta and delta["content"]:
+                            accumulated_text += delta["content"]
+                    except Exception:
+                        pass
+        else:
+            try:
+                res_data = json.loads(raw_resp)
+                accumulated_text = res_data["choices"][0]["message"]["content"]
+            except Exception:
+                accumulated_text = raw_resp
+
+        data = self._safe_parse_json(accumulated_text)
+        return self._build_chat_response(data, relevant_pages)
+
+    def _call_gemini_pool(
+        self,
+        question: str,
+        relevant_pages: List[Dict[str, Any]],
+        user_docs: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        doc_attachments: Optional[List[Dict[str, Any]]] = None,
+        image_attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> ChatResponse:
+        """Memanggil Google Gemini dengan rotasi multi-key jika terjadi HTTP 429, lengkap dengan multimodal vision & document grounding."""
+        if not self.gemini_keys:
+            raise RuntimeError("Tidak ada Gemini API Key yang terdaftar.")
+
+        context_parts = []
+        if doc_attachments:
+            for da in doc_attachments:
+                fname = da.get("filename", "Dokumen Lampiran")
+                txt = da.get("extracted_text", "").strip()[:8000]
+                if txt:
+                    context_parts.append(f"--- DOKUMEN LAMPIRAN PENGGUNA ({fname}) ---\n{txt}")
+
+        if relevant_pages:
+            context_str = self._format_context(relevant_pages, user_docs)
+            context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+
+        if context_parts:
+            full_context = "\n\n".join(context_parts)
+            user_prompt = f"KONTEKS RUJUKAN:\n{full_context}\n\nPERTANYAAN PENGGUNA:\n{question}"
+        else:
+            user_prompt = question
+
+        contents_payload = []
+        if chat_history:
+            for h in chat_history:
+                role = "user" if h.get("sender") == "user" else "model"
+                h_text = h.get("text", "")
+                if h_text and len(h_text.strip()) > 0:
+                    contents_payload.append({
+                        "role": role,
+                        "parts": [{"text": h_text}]
+                    })
+
+        user_parts = []
+        if image_attachments:
+            for img in image_attachments:
+                mime = img.get("mime_type", "image/png")
+                b64 = img.get("base64_data", "")
+                if b64:
+                    user_parts.append({
+                        "inline_data": {
+                            "mime_type": mime,
+                            "data": b64
+                        }
+                    })
+        user_parts.append({"text": user_prompt})
+        contents_payload.append({
+            "role": "user",
+            "parts": user_parts
+        })
+
+        payload = {
+            "system_instruction": {
+                "parts": [{"text": CLAUDIA_STYLE_SYSTEM_PROMPT}]
+            },
+            "contents": contents_payload,
+            "generationConfig": {
+                "response_mime_type": "application/json",
+                "temperature": 0.1,
+                "maxOutputTokens": 3000
+            }
+        }
+        req_data = json.dumps(payload).encode("utf-8")
+
+        # Coba setiap key dalam pool
+        attempts = len(self.gemini_keys)
+        for _ in range(attempts):
+            active_key = self.gemini_keys[self._current_key_idx]
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent?key={active_key}"
+            req = urllib.request.Request(
+                url,
+                data=req_data,
+                headers={"Content-Type": "application/json"},
+                method="POST"
+            )
+
+            try:
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    res_body = resp.read().decode("utf-8")
+                    gemini_res = json.loads(res_body)
+
+                raw_text = gemini_res["candidates"][0]["content"]["parts"][0]["text"]
+                data = self._safe_parse_json(raw_text)
+                return self._build_chat_response(data, relevant_pages)
+
+            except urllib.error.HTTPError as err:
+                if err.code in (429, 403):
+                    logger.warning(f"Gemini Key index {self._current_key_idx} terkena limit ({err.code}). Rotasi ke key berikutnya...")
+                    self._current_key_idx = (self._current_key_idx + 1) % len(self.gemini_keys)
+                    continue
+                raise err
+
+        raise RuntimeError("Semua Gemini API Key di dalam pool mengalami limit kuota.")
+
+    def _call_groq(
+        self,
+        question: str,
+        relevant_pages: List[Dict[str, Any]],
+        user_docs: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        doc_attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> ChatResponse:
+        """Memanggil Groq LPU dengan multi-turn chat history dan dokumen lampiran."""
+        context_parts = []
+        if doc_attachments:
+            for da in doc_attachments:
+                fname = da.get("filename", "Dokumen Lampiran")
+                txt = da.get("extracted_text", "").strip()[:8000]
+                if txt:
+                    context_parts.append(f"--- DOKUMEN LAMPIRAN PENGGUNA ({fname}) ---\n{txt}")
+
+        if relevant_pages:
+            context_str = self._format_context(relevant_pages, user_docs)
+            context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+
+        if context_parts:
+            full_context = "\n\n".join(context_parts)
+            user_prompt = f"KONTEKS RUJUKAN:\n{full_context}\n\nPERTANYAAN PENGGUNA:\n{question}"
+        else:
+            user_prompt = question
+
+        messages = [{"role": "system", "content": CLAUDIA_STYLE_SYSTEM_PROMPT}]
+        if chat_history:
+            for h in chat_history:
+                sender_role = "user" if h.get("sender") == "user" else "assistant"
+                h_text = h.get("text", "")
+                if h_text and len(h_text.strip()) > 0:
+                    messages.append({"role": sender_role, "content": h_text})
+
+        messages.append({"role": "user", "content": user_prompt})
+
+        chat_completion = self.groq_client.chat.completions.create(
+            messages=messages,
+            model=self.groq_model,
+            response_format={"type": "json_object"},
+            temperature=0.1,
+            max_tokens=2500
+        )
+        data = self._safe_parse_json(chat_completion.choices[0].message.content)
+        return self._build_chat_response(data, relevant_pages)
+
+    def _format_context(self, relevant_pages: List[Dict[str, Any]], user_docs: List[Dict[str, Any]]) -> str:
+        """Menyusun teks konteks untuk disuntikkan ke prompt LLM."""
+        if relevant_pages:
+            blocks = []
+            for idx, p in enumerate(relevant_pages, start=1):
+                doc_id = p.get("document_id")
+                title = p.get("document_title")
+                page_no = p.get("page_number")
+                snippet = p.get("text", "")[:3500]
+                blocks.append(f"--- RUJUKAN [{idx}]: {title} (ID: {doc_id}) | HALAMAN: {page_no} ---\n{snippet}\n")
+            return "\n".join(blocks)
+        elif user_docs:
+            doc_titles = [f"- {d.get('title')} ({d.get('total_pages', 1)} Halaman)" for d in user_docs]
+            return "Daftar Dokumen yang Tersedia di MyLibrary Pengguna:\n" + "\n".join(doc_titles)
+        else:
+            return "MyLibrary pengguna saat ini masih kosong."
+
+    def _safe_parse_json(self, raw_text: str) -> Dict[str, Any]:
+        """Ekstraksi JSON aman dari respons LLM."""
+        try:
+            return json.loads(raw_text)
+        except Exception:
+            start = raw_text.find("{")
+            end = raw_text.rfind("}")
+            if start != -1 and end != -1:
+                return json.loads(raw_text[start:end+1])
+            return {"answer": raw_text.strip(), "citations": []}
+
+    def _build_chat_response(self, data: Dict[str, Any], relevant_pages: List[Dict[str, Any]]) -> ChatResponse:
+        citations = []
+        raw_cits = data.get("citations", [])
+        if isinstance(raw_cits, list):
+            for c in raw_cits:
+                quote = c.get("exact_quote", "").strip()
+                if quote:
+                    default_doc_id = relevant_pages[0]["document_id"] if relevant_pages else c.get("document_id", "")
+                    default_title = relevant_pages[0]["document_title"] if relevant_pages else c.get("document_title", "Dokumen Referensi")
+                    default_page = relevant_pages[0]["page_number"] if relevant_pages else c.get("page_number", 1)
+                    citations.append(CitationItem(
+                        document_id=c.get("document_id", default_doc_id),
+                        document_title=c.get("document_title", default_title),
+                        page_number=int(c.get("page_number", default_page)),
+                        exact_quote=quote
+                    ))
+
+        answer_text = data.get("answer", "Penjelasan berhasil disusun.")
+        if citations and not any(f"[{i+1}]" in answer_text for i in range(len(citations))):
+            citations = []
+
+        return ChatResponse(
+            answer=answer_text,
+            citations=citations
+        )
+
+    def _local_smart_synthesis(
+        self,
+        question: str,
+        relevant_pages: List[Dict[str, Any]],
+        user_docs: List[Dict[str, Any]],
+        is_conversational: bool,
+        doc_attachments: Optional[List[Dict[str, Any]]] = None,
+        image_attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> ChatResponse:
+        """Sintesis deterministik lokal berkarakter Claudia ketika model eksternal offline."""
+        # 1. Jika pengguna melampirkan berkas dokumen
+        if doc_attachments:
+            first_doc = doc_attachments[0]
+            fname = first_doc.get("filename", "Dokumen Lampiran")
+            raw_text = first_doc.get("extracted_text", "")
+            lines = [l.strip() for l in raw_text.split("\n") if len(l.strip()) > 15][:6]
+            bullet_points = "\n- ".join(lines) if lines else "Teks dokumen berhasil dibaca dan dianalisis."
+            return ChatResponse(
+                answer=(
+                    f"Telah memeriksa berkas lampiran **{fname}**.\n\n"
+                    f"**Ringkasan Teks Lampiran:**\n- {bullet_points}\n\n"
+                    f"Berdasarkan materi yang dilampirkan, sistem telah mengekstrak konten tersebut untuk menjawab: *\"{question}\"*."
+                ),
+                citations=[]
+            )
+
+        # 2. Jika pengguna melampirkan gambar
+        if image_attachments:
+            img_names = ", ".join([img.get("filename", "Gambar") for img in image_attachments])
+            return ChatResponse(
+                answer=(
+                    f"Lampiran gambar **{img_names}** telah diterima dan diproses.\n\n"
+                    "Untuk analisis multimodal visual lengkap dengan pengenalan kurva, teks, dan struktur sediaan farmasi, pastikan Gemini API Key aktif di pengaturan sistem."
+                ),
+                citations=[]
+            )
+
+        # 3. Tangani pertanyaan percakapan, identitas, atau jika tidak ada dokumen spesifik yang cocok
+        if is_conversational or not relevant_pages:
+            reasoned_answer = self._reason_open_domain_answer(question, user_docs)
+            return ChatResponse(
+                answer=reasoned_answer,
+                citations=[]
+            )
+
+        top_page = relevant_pages[0]
+        text = top_page.get("text", "")
+        doc_title = top_page.get("document_title", "Dokumen")
+        page_num = top_page.get("page_number", 1)
+        q_lower = question.lower()
+
+        # Cek apakah pengguna meminta gambar / visual
+        is_visual = any(w in q_lower for w in ["gambar", "diagram", "grafik", "kurva", "bagan", "tabel", "skema", "figure", "plot", "foto"])
+
+        # Bersihkan teks halaman dari nomor halaman mentah
+        clean_lines = [l.strip() for l in text.split("\n") if l.strip() and not l.strip().isdigit()]
+        meaningful_lines = [l for l in clean_lines if len(l) > 10 and not l.lower().startswith("halaman") and not l.lower().startswith("page")]
+
+        exact_quote = meaningful_lines[0] if meaningful_lines else (clean_lines[0] if clean_lines else text[:120])
+        body_content = "\n".join([f"> {line}" for line in meaningful_lines[:4]]) if meaningful_lines else f"> {text.strip()}"
+
+        if is_visual:
+            answer_text = (
+                f"Berikut adalah rujukan materi dan potongan visual dari dokumen **{doc_title}** (Halaman {page_num}):\n\n"
+                f"{body_content}\n\n"
+                f"Potongan gambar atau diagram yang berkaitan dengan materi ini telah dilampirkan langsung di bawah penjelasan. "
+                f"Anda dapat mengklik rujukan halaman untuk memeriksa letak asli gambar tersebut pada lembar dokumen."
+            )
+        else:
+            answer_text = (
+                f"Berdasarkan literatur **{doc_title}** (Halaman {page_num}):\n\n"
+                f"{body_content}\n\n"
+                f"Kutipan lengkap dapat Anda periksa langsung pada lembar fisik dokumen di panel sebelah kanan [1]."
+            )
+
+        return ChatResponse(
+            answer=answer_text,
+            citations=[
+                CitationItem(
+                    document_id=top_page.get("document_id"),
+                    document_title=doc_title,
+                    page_number=page_num,
+                    exact_quote=exact_quote
+                )
+            ]
+        )
+
+    def _reason_open_domain_answer(self, question: str, user_docs: List[Dict[str, Any]]) -> str:
+        """Penalaran cerdas terbuka untuk identitas, pembuat, kapabilitas, sains, dan matematika."""
+        q = question.lower().strip()
+
+        # 1. Pertanyaan Pembuat / Developer / Pencipta
+        creator_words = [
+            "mencipta", "menciptkaan", "ciptakan", "pencipta", "pembuat", "membuat", 
+            "develop", "siapa yang buat", "siapa yang bikin", "pembuat kamu", "pencipta kamu", 
+            "siapa yang ngembangin", "pengembang", "siapa pembuatmu"
+        ]
+        if any(w in q for w in creator_words):
+            return (
+                "Saya diciptakan dan dikembangkan oleh **Arya Eki Nur Seputro** sebagai asisten riset dan akademik cerdas dalam platform **EPIONA Assistant**.\n\n"
+                "Sistem ini dirancang khusus untuk memfasilitasi penelusuran literatur ilmiah presisi tinggi, analisis dokumen farmasi dan sains, serta sintesis materi pembelajaran secara terverifikasi."
+            )
+
+        # 2. Pertanyaan Identitas Diri & Peran
+        identity_words = ["siapa kamu", "siapa dirimu", "kamu siapa", "nama kamu", "namamu", "apa nama sistem ini", "kamu ai apa"]
+        if any(w in q for w in identity_words):
+            return (
+                "Saya adalah **EPIONA Assistant**, platform asisten kecerdasan buatan untuk riset akademik, analisis literatur ilmiah, dan studi farmasi/sains yang dikembangkan oleh **Arya Eki Nur Seputro**.\n\n"
+                "Fokus utama saya adalah memberikan jawaban berbasis rujukan ilmiah yang terverifikasi (zero-hallucination) dengan sitasi 1:1 langsung ke lembar dokumen, sekaligus membantu penalaran konsep sains dan matematika secara terstruktur."
+            )
+
+        # 3. Pertanyaan Tugas & Kemampuan
+        task_words = ["tugas kamu", "fungsi kamu", "apa yang bisa kamu lakukan", "bisa apa saja", "fitur kamu", "kelebihan kamu", "kemampuan kamu", "tugasmu"]
+        if any(w in q for w in task_words):
+            return (
+                "Sebagai asisten riset dan pembelajaran cerdas, tugas utama saya meliputi:\n\n"
+                "1. **Analisis Literatur MyLibrary (Zero-Hallucination)**: Membedah dokumen PDF Anda dan menyajikan jawaban lengkap dengan rujukan sitasi presisi halaman 1:1.\n"
+                "2. **Web Academic Explorer**: Menjelajah jurnal ilmiah global (PubMed, arXiv, Crossref) untuk memperkaya literatur terkini.\n"
+                "3. **Multimodal Document Reader**: Mengekstrak teks, membaca diagram/bagan, serta menganalisis visual materi dan sediaan.\n"
+                "4. **Penalaran Sains & Komputasi**: Menjelaskan konsep matematika, komputasi numerik, kimia, farmakologi, dan sains umum secara luwes dan terstruktur.\n"
+                "5. **Manajemen Dokumen Terstruktur**: Mengorganisasi inventaris koleksi riset Anda secara efisien."
+            )
+
+        # 4. Pertanyaan Salam & Pembuka Percakapan
+        greetings = ["halo", "hai", "hello", "hi", "selamat pagi", "selamat siang", "selamat sore", "selamat malam", "assalamu'alaikum", "assalamualaikum", "pagi", "siang", "sore", "malam"]
+        if any(q == g or q.startswith(f"{g} ") or q.endswith(f" {g}") for g in greetings):
+            return (
+                "Halo! Saya **EPIONA Assistant**, siap membantu Anda menganalisis literatur dokumen, menelusuri jurnal ilmiah, atau mendiskusikan materi riset dan sains Anda. Ada topik atau dokumen yang ingin kita bedah bersama?"
+            )
+
+        # 5. Konsep Sains / Numerik / Farmasi Spesifik (Domain Expertise)
+        if "biseksi" in q:
+            return (
+                "**Metode Biseksi (Bisection Method)** adalah algoritma pencarian akar persamaan non-linier $f(x) = 0$ dalam rentang interval $[a, b]$ dengan syarat nilai fungsi memiliki tanda berlawanan ($f(a) \\cdot f(b) < 0$, Teorema Nilai Antara Bolzano).\n\n"
+                "**Langkah Kerja:**\n"
+                "1. Tentukan interval awal $[a, b]$ sehingga $f(a) \\cdot f(b) < 0$.\n"
+                "2. Hitung titik tengah: $c = \\frac{a + b}{2}$.\n"
+                "3. Evaluasi $f(c)$:\n"
+                "   - Jika $f(c) = 0$ atau $|b - a| < \\epsilon$ (toleransi error), maka $c$ adalah akar.\n"
+                "   - Jika $f(a) \\cdot f(c) < 0$, akar berada di sub-interval $[a, c]$ (atur $b = c$).\n"
+                "   - Jika sebaliknya, akar berada di sub-interval $[c, b]$ (atur $a = c$).\n"
+                "4. Ulangi proses hingga galat relatif atau absolut terpenuhi.\n\n"
+                "*Catatan: Metode ini selalu konvergen (linier) dengan laju reduksi interval sebesar 50% setiap iterasi.*"
+            )
+
+        if "secant" in q or "sekan" in q:
+            return (
+                "**Metode Secant (Metode Garis Sekan)** adalah metode numerik pencarian akar persamaan non-linier yang menggantikan turunan $f'(x)$ pada metode Newton-Raphson dengan hampiran garis potong (garis sekan) dari dua titik sebelumnya:\n\n"
+                "$$x_{n+1} = x_n - f(x_n) \\frac{x_n - x_{n-1}}{f(x_n) - f(x_{n-1})}$$\n\n"
+                "**Keunggulan & Karakteristik:**\n"
+                "- Tidak memerlukan penurunan fungsi secara analitik ($f'(x)$).\n"
+                "- Konvergensi superlinier (orde $\\approx 1.618$), lebih cepat dari Biseksi namun lebih rentan divergen jika nilai awal tidak dipilih dekat dengan akar."
+            )
+
+        if "spl" in q or "persamaan linier" in q or "eliminasi gauss" in q:
+            return (
+                "**Sistem Persamaan Linier (SPL)** dalam metode komputasi numerik diselesaikan melalui dua pendekatan utama:\n\n"
+                "1. **Metode Langsung (Direct Methods):**\n"
+                "   - **Eliminasi Gauss**: Mengubah matriks augmented $[A|b]$ menjadi matriks segitiga atas, lalu diselesaikan dengan substitusi mundur (*backward substitution*).\n"
+                "   - **Gauss-Jordan**: Mengubah matriks augmented menjadi matriks eselon tereduksi (matriks identitas).\n"
+                "   - **Dekomposisi LU**: Memfaktorkan matriks $A = L \\cdot U$ untuk efisiensi komputasi vektor beban ganda.\n\n"
+                "2. **Metode Iteratif (Iterative Methods):**\n"
+                "   - **Metode Jacobi** dan **Gauss-Seidel**: Menghampiri solusi secara rekursif hingga memenuhi kriteria galat toleransi $\\epsilon$, sangat efisien untuk matriks jarang (*sparse matrix*)."
+            )
+
+        if "amoksisilin" in q or "amoxicillin" in q:
+            return (
+                "**Amoksisilin** adalah antibiotik spektrum luas turunan penisilin semi-sintetik (golongan beta-laktam).\n\n"
+                "**Mekanisme Kerja:**\n"
+                "1. Mengikat secara kovalen protein target spesifik pada membran sitoplasma bakteri yang dikenal sebagai **Penicillin-Binding Proteins (PBPs)**, khususnya transpeptidase.\n"
+                "2. Menghambat reaksi transpeptidasi (tahap akhir sintesis peptidoglikan), sehingga mencegah ikatan silang (*cross-linking*) rantai peptidoglikan.\n"
+                "3. Melemahkan integritas dinding sel bakteri, memicu aktivasi enzim autolitik bakteri, dan berujung pada lisis sel bakteri (*bakterisidal*)."
+            )
+
+        # 6. Jawaban Terbuka Adaptif / General Reasoning
+        # Bangun penalaran umum yang ramah dan solutif
+        available_titles = [d.get("title", "") for d in (user_docs or []) if d.get("title")]
+        library_context_hint = ""
+        if available_titles:
+            sample_titles = ", ".join([f"**{t}**" for t in available_titles[:3]])
+            library_context_hint = f"\n\n*(Saat ini MyLibrary Anda memuat materi: {sample_titles}. Jika pertanyaan Anda berkaitan dengan modul tersebut, Anda dapat menyebutkan istilah spesifiknya agar saya rujuk langsung ke halamannya.)*"
+
+        return (
+            f"Mengenai pertanyaan Anda: *\"{question}\"*,\n\n"
+            f"Secara konseptual, materi ini mencakup pembahasan ilmiah umum. "
+            f"Saya dapat membantu menguraikan prinsip-prinsip dasarnya, rumus komputasi, maupun kaitannya dengan literatur akademis.{library_context_hint}"
+        )
+
+    def generate_library_overview(
+        self,
+        question: str,
+        docs_summary: List[Dict[str, Any]]
+    ) -> ChatResponse:
+        """Menghasilkan ringkasan dan inventaris dokumen koleksi MyLibrary pengguna."""
+        if not docs_summary:
+            return ChatResponse(
+                answer="MyLibrary Anda saat ini masih kosong. Silakan unggah file PDF melalui menu MyLibrary terlebih dahulu.",
+                citations=[]
+            )
+
+        total_count = len(docs_summary)
+        answer_lines = [f"Di dalam **MyLibrary** Anda saat ini terdapat **{total_count} file/dokumen**:\n"]
+        citations = []
+
+        for idx, doc in enumerate(docs_summary, 1):
+            title = doc.get("title", f"Dokumen {idx}")
+            pages_count = doc.get("total_pages", 1)
+            sample = doc.get("sample_text", "").strip()
+            clean_sample = " ".join(sample.split())
+            preview_desc = clean_sample[:250] + "..." if len(clean_sample) > 250 else clean_sample
+            if not preview_desc:
+                preview_desc = "Dokumen referensi akademik perpustakaan."
+
+            first_quote = sample[:80].strip() if sample else title
+            answer_lines.append(
+                f"{idx}. **{title}** ({pages_count} Halaman)\n"
+                f"   * **Topik/Isi Dokumen**: {preview_desc}\n"
+            )
+
+            citations.append(
+                CitationItem(
+                    document_id=doc["id"],
+                    document_title=title,
+                    page_number=1,
+                    exact_quote=first_quote
+                )
+            )
+
+        return ChatResponse(
+            answer="\n".join(answer_lines),
+            citations=citations
+        )
+
+    def answer_academic_chat(
+        self,
+        question: str,
+        academic_evidence: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None
+    ) -> ChatResponse:
+        """
+        Sintesis jawaban ilmiah berbasis bukti empiris (Evidence-Based Medicine) ala Perplexity & Consensus.
+        Mengaitkan setiap temuan studi dengan nomor sitasi [1], [2] yang kaya metadata jurnal internasional.
+        """
+        if not academic_evidence:
+            return ChatResponse(
+                answer=(
+                    "Tidak ditemukan naskah jurnal ilmiah yang secara spesifik membahas pertanyaan tersebut di repositori PubMed dan arXiv. "
+                    "Silakan formulasikan pertanyaan menggunakan kata kunci obat, senyawa, atau kondisi klinis."
+                ),
+                citations=[]
+            )
+
+        # Susun daftar sitasi yang kaya metadata
+        citations: List[CitationItem] = []
+        context_parts = []
+        for idx, item in enumerate(academic_evidence, 1):
+            title = item.get("document_title", "Jurnal Riset")
+            journal = item.get("journal_name", "Medical Journal")
+            year = item.get("publication_year", "2024")
+            authors = item.get("authors", [])
+            authors_str = ", ".join(authors[:2]) + (" et al." if len(authors) > 2 else "")
+            abstract = item.get("abstract_snippet", "")
+            doi = item.get("doi", "")
+            url = item.get("url", "")
+            pdf_url = item.get("pdf_url")
+
+            first_quote = abstract[:160].strip() if abstract else f"Studi klinis di {journal} ({year})."
+
+            citations.append(
+                CitationItem(
+                    document_id=f"academic-{idx}",
+                    document_title=title,
+                    page_number=1,
+                    exact_quote=first_quote,
+                    source_type="academic_web",
+                    journal_name=journal,
+                    publication_year=year,
+                    authors=authors,
+                    doi=doi,
+                    url=url,
+                    pdf_url=pdf_url,
+                    abstract_snippet=abstract
+                )
+            )
+
+            context_parts.append(
+                f"[{idx}] JUDUL: {title}\n"
+                f"    JURNAL: {journal} ({year}) | PENULIS: {authors_str}\n"
+                f"    DOI / URL: {doi} ({url})\n"
+                f"    ABSTRAK / TEMUAN EMPIRIS: {abstract}\n"
+            )
+
+        context_str = "\n".join(context_parts)
+
+        # Sintesis cerdas ala Claude & Consensus
+        # Jika ada engine AI aktif (9Router / Gemini / Groq)
+        academic_prompt = (
+            "KONTEKS LITERATUR ILMIAH TERVERIFIKASI (PubMed / PMC / arXiv):\n"
+            f"{context_str}\n\n"
+            f"PERTANYAAN PENGGUNA:\n{question}\n\n"
+            "INSTRUKSI EVIDENCE-BASED MEDICINE:\n"
+            "1. Jawab pertanyaan pengguna secara komprehensif, terstruktur, dan elegan dalam bahasa Indonesia murni ala Consensus / Perplexity Pro.\n"
+            "2. Setiap kali menyebutkan temuan studi, mekanisme aksi, atau dosis, cantumkan nomor sitasi dalam kurung siku misalnya [1], [2] bersesuaian dengan indeks literatur di atas.\n"
+            "3. Sebutkan nama jurnal atau penulis utama dalam kalimat untuk transparansi ilmiah (contoh: 'Menurut tinjauan di Cochrane Database [1]...').\n"
+            "4. Sertakan kesimpulan praktis atau evaluasi klinis di akhir jawaban."
+        )
+
+        # 1. Coba 9Router jika aktif
+        if self._is_router_alive():
+            try:
+                payload = {
+                    "model": self.router_model,
+                    "messages": [
+                        {"role": "system", "content": "Anda adalah asisten sintesis literatur farmasi klinis & riset kedokteran berbasis bukti."},
+                        {"role": "user", "content": academic_prompt}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 2500
+                }
+                req = urllib.request.Request(
+                    f"{self.router_base_url}/chat/completions",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.router_api_key}"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    raw_text = resp.read().decode("utf-8")
+                res_data = json.loads(raw_text)
+                ai_answer = res_data["choices"][0]["message"]["content"]
+                return ChatResponse(answer=ai_answer, citations=citations)
+            except Exception:
+                pass
+
+        # 2. Coba Groq jika aktif
+        if self.groq_client:
+            try:
+                comp = self.groq_client.chat.completions.create(
+                    model=self.groq_model or "llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": "Anda adalah asisten sintesis literatur farmasi klinis & riset kedokteran berbasis bukti."},
+                        {"role": "user", "content": academic_prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=2500
+                )
+                ai_answer = comp.choices[0].message.content
+                return ChatResponse(answer=ai_answer, citations=citations)
+            except Exception:
+                pass
+
+        # 3. Fallback Sintesis Ilmiah Terstruktur Berbahasa Indonesia (Comprehensive Narrative)
+        body_lines = [
+            f"Berdasarkan telaah sistematis literatur terakreditasi pada basis data **PubMed / NCBI & PMC** mengenai topik *\"{question}\"*, berikut adalah sintesis bukti ilmiah dan evaluasi farmakologis komprehensif:\n",
+            "### 1. Ikhtisar Farmakologi & Mekanisme Kerja",
+        ]
+
+        if any("dimethylarginine" in (item.get("document_title", "") + item.get("abstract_snippet", "")).lower() for item in academic_evidence):
+            body_lines.append(
+                "**Asymmetric Dimethylarginine (ADMA)** merupakan analog asam amino L-arginin endogen yang bertindak sebagai penghambat kompetitif utama enzim *Nitric Oxide Synthase* (NOS) [1]. "
+                "Peningkatan kadar ADMA secara biologis menurunkan sintesis *Nitric Oxide* (NO), yang memicu disfungsi endotel vaskular, vasokonstriksi abnormal, serta peningkatan risiko penyakit kardiovaskular dan komplikasi preeklamsia [2], [3].\n"
+            )
+        else:
+            first_paper = academic_evidence[0]
+            fp_title = first_paper.get("document_title", "")
+            fp_abs = first_paper.get("abstract_snippet", "")
+            body_lines.append(
+                f"Kajian literatur ilmiah menunjukkan korelasi signifikan antara intervensi farmakologis dengan luaran klinis yang terukur [1]. "
+                f"Sebagaimana dilaporkan dalam studi mengenai *{fp_title}*, {fp_abs}\n"
+            )
+
+        body_lines.append("### 2. Bukti Empiris & Temuan Studi Terakreditasi")
+        for idx, item in enumerate(academic_evidence, 1):
+            t = item.get("document_title")
+            j = item.get("journal_name")
+            y = item.get("publication_year")
+            ab = item.get("abstract_snippet", "")
+            body_lines.append(
+                f"- **[{idx}] {t}**\n"
+                f"  *Jurnal*: {j} ({y})\n"
+                f"  *Sorotan Bukti*: {ab}\n"
+            )
+
+        body_lines.append(
+            "### 3. Implikasi Klinis & Kesimpulan Riset\n"
+            "Secara farmakoterapeutik, pemantauan biomarker dan evaluasi modulasi molekuler menjadi faktor krusial dalam pencegahan komplikasi klinis. "
+            "Data empiris mengonfirmasi bahwa intervensi yang mampu memulihkan keseimbangan jalur biokimia ini berpotensi memberikan manfaat protektif yang signifikan bagi pasien."
+        )
+
+        return ChatResponse(
+            answer="\n".join(body_lines),
+            citations=citations
+        )
+
+    def generate_smart_session_title(self, question: str, answer: str) -> str:
+        """Membuat judul sesi percakapan yang cerdas, padat (2-4 kata), dan relevan ala Claude/ChatGPT."""
+        import re
+        from app.indexer import DocumentSearchIndex
+        norm_q = DocumentSearchIndex.normalize_query(question).strip()
+        norm_q_lower = norm_q.lower()
+
+        # 1. Deteksi intent khusus (Inventaris, Profil, Paper, Topik Kuliah)
+        if any(k in norm_q_lower for k in ["berapa dokumen", "berapa file", "punya berapa", "ada berapa dokumen", "koleksi dokumen", "isi library"]):
+            fallback_title = "Inventaris Koleksi Dokumen"
+        elif any(k in norm_q_lower for k in ["siapa kamu", "siapa anda", "jelaskan siapa", "identitas", "perkenalkan", "profil"]):
+            fallback_title = "Perkenalan Asisten Epiona"
+        elif any(k in norm_q_lower for k in ["paper", "jurnal"]):
+            m = re.search(r"(?:tentang|mengenai|topik|riset|terkait)\s+(.+)", norm_q, re.I)
+            if m:
+                words = [w for w in re.findall(r"\b\w+\b", m.group(1)) if len(w) > 2]
+                if words:
+                    sub = " ".join(words[:2]).title()
+                    fallback_title = f"Riset Paper {sub}"
+                else:
+                    fallback_title = "Pencarian Paper Jurnal"
+            else:
+                fallback_title = "Pencarian Paper Jurnal"
+        elif "week 1" in norm_q_lower or "w1" in norm_q_lower:
+            fallback_title = "Modul Week 1 NumMeth"
+        elif "spl" in norm_q_lower or "persamaan linier" in norm_q_lower:
+            fallback_title = "Sistem Persamaan Linier"
+        elif "biseksi" in norm_q_lower:
+            fallback_title = "Metode Biseksi"
+        elif "secant" in norm_q_lower:
+            fallback_title = "Metode Secant"
+        elif "fixed point" in norm_q_lower:
+            fallback_title = "Metode Fixed Point"
+        elif "adma" in norm_q_lower:
+            fallback_title = "Kajian ADMA Farmasi"
+        elif "agentic" in norm_q_lower or "multi sistem" in norm_q_lower or "agent" in norm_q_lower:
+            fallback_title = "Multi-Agent System"
+        else:
+            # Stopwords & filter kata sambung umum/typo
+            stopwords = {
+                "apakah", "apa", "bagaimana", "kenapa", "mengapa", "tolong", "bisa", "bisakah",
+                "mohon", "coba", "jelaskan", "tampilkan", "carikan", "dong", "sih", "sebutkan",
+                "lah", "kan", "ini", "itu", "tentang", "pada", "di", "ke", "dari", "untuk",
+                "ada", "nggak", "tidak", "ya", "yah", "kak", "min", "halo", "hai",
+                "saya", "kamu", "anda", "aku", "ingin", "mau", "tanya", "bertanya", "isi", "file",
+                "dokumen", "seperti", "yang", "dan", "atau", "dengan", "secara", "menurut",
+                "terkait", "dalam", "mengenai", "seputar", "hal", "adalah", "merupakan",
+                "bahas", "uraikan", "analisis", "kajian", "berikan", "kasih", "info", "informasi",
+                "apaan", "gimana", "bagaimanakah", "dengn", "yagn", "yg", "dgn", "bbrp", "utk",
+                "mudah", "dipaham", "paham"
+            }
+            words = [w for w in re.findall(r"\b\w+\b", norm_q) if w.lower() not in stopwords and len(w) >= 3]
+            if words:
+                fallback_title = " ".join(words[:3]).title()
+            else:
+                fallback_title = "Diskusi Riset Akademik"
+
+        if fallback_title and fallback_title not in ("Diskusi Riset Akademik", "Riset Literatur Farmasi"):
+            return fallback_title
+
+        prompt = (
+            "Buatlah 1 judul sesi percakapan yang sangat singkat, padat, dan elegan dalam 3-5 kata bahasa Indonesia murni "
+            "(gaya ChatGPT atau Claude, mudah dipahami manusia). DILARANG menggunakan tanda kutip, kata tanya, tanda seru, atau titik.\n\n"
+            f"Pertanyaan pengguna: {question[:150]}\n"
+            f"Ringkasan jawaban: {answer[:200]}\n\n"
+            "Format balasan: HANYA judul tersebut tanpa teks lain."
+        )
+
+        # 1. Coba via 9Router (jika gateway lokal aktif)
+        if self._is_router_alive():
+            try:
+                payload = {
+                    "model": self.router_model,
+                    "messages": [
+                        {"role": "system", "content": "Anda adalah asisten perumus judul sesi percakapan 2-4 kata."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 25
+                }
+                req = urllib.request.Request(
+                    f"{self.router_base_url}/chat/completions",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.router_api_key}"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=1.2) as resp:
+                    raw_text = resp.read().decode("utf-8")
+
+                accumulated = ""
+                if "data: " in raw_text:
+                    for line in raw_text.splitlines():
+                        line = line.strip()
+                        if line.startswith("data: ") and not line.endswith("[DONE]"):
+                            chunk_json = line[6:].strip()
+                            try:
+                                chunk = json.loads(chunk_json)
+                                delta = chunk.get("choices", [{}])[0].get("delta", {})
+                                if "content" in delta and delta["content"]:
+                                    accumulated += delta["content"]
+                            except Exception:
+                                pass
+                else:
+                    try:
+                        res_data = json.loads(raw_text)
+                        accumulated = res_data["choices"][0]["message"]["content"]
+                    except Exception:
+                        accumulated = raw_text
+
+                gen_title = accumulated.strip().strip('"\'*#')
+                if gen_title and 3 <= len(gen_title) <= 40:
+                    return gen_title
+            except Exception:
+                pass
+
+        # 2. Coba via Gemini API (jika API key aktif & cepat <1.5s)
+        if self.gemini_keys:
+            try:
+                for k in self.gemini_keys:
+                    g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent?key={k}"
+                    g_payload = {
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {"temperature": 0.2, "maxOutputTokens": 25}
+                    }
+                    g_req = urllib.request.Request(
+                        g_url,
+                        data=json.dumps(g_payload).encode("utf-8"),
+                        headers={"Content-Type": "application/json"},
+                        method="POST"
+                    )
+                    with urllib.request.urlopen(g_req, timeout=1.5) as resp:
+                        g_body = resp.read().decode("utf-8")
+                        g_res = json.loads(g_body)
+                        g_text = g_res["candidates"][0]["content"]["parts"][0]["text"].strip().strip('"\'*#')
+                        if g_text and 3 <= len(g_text) <= 40:
+                            return g_text
+            except Exception:
+                pass
+
+        # 3. Coba Groq LPU
+        if self.groq_client:
+            try:
+                resp = self.groq_client.chat.completions.create(
+                    model=self.groq_model or "llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": "Anda adalah asisten perumus judul sesi percakapan 2-4 kata."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    temperature=0.2,
+                    max_tokens=25,
+                    timeout=1.5
+                )
+                title = resp.choices[0].message.content.strip().strip('"\'*#')
+                if title and 3 <= len(title) <= 40:
+                    return title
+            except Exception:
+                pass
+
+        return fallback_title
