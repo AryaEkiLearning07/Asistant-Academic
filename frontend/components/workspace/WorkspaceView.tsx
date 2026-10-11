@@ -384,33 +384,6 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 adjustTextareaHeight={adjustTextareaHeight}
                 setLightboxImage={setLightboxImage}
               />
-
-              {/* QUICK PROMPT CHIPS */}
-              <div className="flex flex-wrap items-center justify-center gap-2 mt-6 select-none">
-                {[
-                  { text: "Analisis mekanisme obat...", prompt: "Jelaskan mekanisme kerja dan farmakokinetik obat parasetamol dan ibuprofen." },
-                  { text: "Rangkum modul MyLibrary...", prompt: "Berikan rangkuman komprehensif dari dokumen literatur yang telah saya unggah di MyLibrary." },
-                  { text: "Cari jurnal akademik...", prompt: "Telusuri literatur jurnal terbaru mengenai interaksi obat dan stabilitas formulasi farmasi." },
-                ].map((chip, idx) => (
-                  <button
-                    key={idx}
-                    type="button"
-                    onClick={() => {
-                      setInputQuestion(chip.prompt);
-                      if (chatTextareaRef.current) {
-                        chatTextareaRef.current.focus();
-                      }
-                    }}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-medium border transition cursor-pointer shadow-2xs ${
-                      theme === "dark"
-                        ? "bg-[#1B2127] border-[#2A333B] text-[#9AA9B5] hover:text-[#E6EDF2] hover:border-[#34D3BE]/60 hover:bg-[#2A333B]"
-                        : "bg-white border-[#DCE3E8] text-[#5B6B78] hover:text-[#12202B] hover:border-[#0F766E]/50 hover:bg-teal-50/40"
-                    }`}
-                  >
-                    {chip.text}
-                  </button>
-                ))}
-              </div>
             </div>
           ) : (
             /* CONVERSATION MESSAGE LIST */
