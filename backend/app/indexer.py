@@ -32,7 +32,14 @@ class DocumentSearchIndex:
         "papper": "paper",
         "dengn": "dengan",
         "berpa": "berapa",
-        "tujuanya": "tujuannya"
+        "tujuanya": "tujuannya",
+        "menciptkaan": "menciptakan",
+        "mencipatakan": "menciptakan",
+        "menciptkn": "menciptakan",
+        "ciptakan": "menciptakan",
+        "pembaaut": "membuat",
+        "mmbuat": "membuat",
+        "bikiin": "bikin"
     }
 
     @classmethod

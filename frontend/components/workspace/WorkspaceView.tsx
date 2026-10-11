@@ -188,10 +188,10 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   ? "border-[#2A333B] bg-[#12161A] text-[#9AA9B5] hover:text-[#E6EDF2] hover:bg-[#2A333B]"
                   : "border-[#DCE3E8] bg-white text-[#5B6B78] hover:text-[#0F766E] hover:bg-[#F7F9FA]"
               }`}
-              title="Kembali ke Beranda"
+              title="Kembali ke Beranda Dashboard"
             >
               <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Keluar</span>
+              <span>Beranda</span>
             </button>
 
             <div className="flex items-center gap-2 pl-1">

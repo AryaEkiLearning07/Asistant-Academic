@@ -161,16 +161,30 @@ class AssistantAiService:
         from app.indexer import DocumentSearchIndex
         norm_q = DocumentSearchIndex.normalize_query(question).lower()
 
+        is_creator_or_identity = (
+            any(w in norm_q or w in q_lower for w in ["mencipta", "menciptkaan", "ciptakan", "pencipta", "pembuat", "siapa buat", "siapa bikin", "pengembang", "develop"])
+            and any(p in norm_q or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
+        ) or any(t in q_lower or t in norm_q for t in ["siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu", "apa nama sistem ini", "siapakah kamu", "siapa sih kamu"])
+
+        if is_creator_or_identity and not attachments:
+            return ChatResponse(
+                answer=self._reason_open_domain_answer(question, user_docs),
+                citations=[]
+            )
+
         conversational_triggers = [
             "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
-            "siapa yang menciptakan", "siapa menciptakan", "siapa yang membuat", "siapa pembuat",
-            "siapa pencipta", "siapa developermu", "siapa pengembang", "dibuat oleh siapa",
-            "siapa yang bikin", "siapa penciptamu", "siapa pembuatmu", "tugas kamu apa",
-            "apa tugas kamu", "bisa apa saja", "kamu bisa apa", "apa fungsi kamu",
-            "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
+            "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
+            "menciptkaan", "siapa yang membuat", "siapa membuat", "siapa pembuat",
+            "siapa pencipta", "siapa penciptamu", "siapa pembuatmu", "siapa developermu", "siapa pengembang",
+            "dibuat oleh siapa", "diciptakan oleh siapa", "siapa yang ciptakan",
+            "siapa yang bikin", "siapa bikin", "siapa yang buat", "siapa buat",
+            "pembuat kamu", "pencipta kamu", "perancang kamu",
+            "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
+            "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
             "apa itu epiona", "halo", "hai", "selamat pagi", "selamat siang", "selamat malam",
             "apa kabar", "terima kasih", "makasih", "thanks", "ok", "oke", "sip", "mantap",
-            "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat", "apa fungsi kamu",
+            "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
             "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
         ]
         is_conversational = (

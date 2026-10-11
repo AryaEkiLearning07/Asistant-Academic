@@ -522,16 +522,27 @@ def ask_assistant(
             # Fast-Path Percakapan, Identitas & Sapaan Umum: Hindari query database yang tidak perlu
             conversational_triggers = [
                 "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
-                "siapa yang menciptakan", "siapa menciptakan", "siapa yang membuat", "siapa pembuat",
-                "siapa pencipta", "siapa developermu", "siapa pengembang", "dibuat oleh siapa",
-                "siapa yang bikin", "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
+                "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
+                "menciptkaan", "siapa yang membuat", "siapa membuat", "siapa pembuat",
+                "siapa pencipta", "siapa penciptamu", "siapa pembuatmu", "siapa developermu", "siapa pengembang",
+                "dibuat oleh siapa", "diciptakan oleh siapa", "siapa yang ciptakan",
+                "siapa yang bikin", "siapa bikin", "siapa yang buat", "siapa buat",
+                "pembuat kamu", "pencipta kamu", "perancang kamu",
+                "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
                 "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
                 "apa itu epiona", "halo", "hai", "selamat pagi", "selamat siang", "selamat malam",
                 "apa kabar", "terima kasih", "makasih", "thanks", "ok", "oke", "sip", "mantap",
-                "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat", "apa fungsi kamu",
+                "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
                 "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
             ]
-            is_conversational = any(trigger in norm_q_lower or trigger in q_lower for trigger in conversational_triggers) and not processed_attachments
+            is_creator_query = any(w in norm_q_lower or w in q_lower for w in [
+                "menciptakan", "menciptkaan", "ciptakan", "pencipta", "pembuat", "pengembang", "develop"
+            ]) and any(p in norm_q_lower or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
+
+            is_conversational = (
+                any(trigger in norm_q_lower or trigger in q_lower for trigger in conversational_triggers)
+                or is_creator_query
+            ) and not processed_attachments
 
             top_matches = []
             if not is_conversational:

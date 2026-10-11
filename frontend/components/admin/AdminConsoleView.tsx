@@ -23,6 +23,7 @@ import {
   Unlock,
   FileText,
   ExternalLink,
+  LogOut,
 } from "lucide-react";
 import { UserProfile } from "@/types";
 
@@ -30,6 +31,7 @@ interface AdminConsoleViewProps {
   theme: "dark" | "light";
   currentUser: UserProfile;
   setCurrentNav: (nav: "dashboard" | "workspace" | "library" | "admin") => void;
+  handleLogout: () => void;
   adminActiveTab: "activity" | "users" | "documents" | "server";
   setAdminActiveTab: (tab: "activity" | "users" | "documents" | "server") => void;
   adminStats: any | null;
@@ -55,6 +57,7 @@ export function AdminConsoleView({
   theme,
   currentUser,
   setCurrentNav,
+  handleLogout,
   adminActiveTab,
   setAdminActiveTab,
   adminStats,
@@ -83,7 +86,15 @@ export function AdminConsoleView({
           theme === "dark" ? "border-[#2A333B]" : "border-[#DCE3E8]"
         }`}
       >
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button
+            onClick={handleLogout}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer bg-rose-600 hover:bg-rose-700 text-white"
+            title="Keluar dari sesi Admin & Logout"
+          >
+            <LogOut className="w-4 h-4" />
+            <span>Logout</span>
+          </button>
           <button
             onClick={() => setCurrentNav("dashboard")}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-bold transition shadow-xs cursor-pointer ${
@@ -91,10 +102,10 @@ export function AdminConsoleView({
                 ? "border-[#2A333B] bg-[#1B2127] hover:bg-[#2A333B] text-[#E6EDF2]"
                 : "border-[#DCE3E8] bg-white hover:bg-[#F7F9FA] text-[#12202B]"
             }`}
-            title="Kembali ke Beranda Dashboard"
+            title="Beralih ke Tampilan Dashboard"
           >
             <ArrowLeft className="w-4 h-4 text-rose-500" />
-            <span>Kembali ke Beranda</span>
+            <span>Dashboard</span>
           </button>
           <div>
             <div className="flex items-center gap-2.5">

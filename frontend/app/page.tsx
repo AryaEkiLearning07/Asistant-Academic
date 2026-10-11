@@ -1143,6 +1143,7 @@ export default function AppRoot() {
             theme={theme}
             currentUser={currentUser}
             setCurrentNav={setCurrentNav}
+            handleLogout={handleLogout}
             adminActiveTab={adminActiveTab}
             setAdminActiveTab={setAdminActiveTab}
             adminStats={adminStats}
