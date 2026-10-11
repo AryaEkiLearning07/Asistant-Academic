@@ -7,6 +7,8 @@ import {
   Layers,
   PanelRightClose,
   Sparkles,
+  BookOpen,
+  X,
 } from "lucide-react";
 import {
   UserProfile,
@@ -74,6 +76,7 @@ interface WorkspaceViewProps {
   activeAcademicCitation: CitationItem | null;
   setActiveAcademicCitation: (c: CitationItem | null) => void;
   activeDoc: DocumentItem | null;
+  setActiveDoc: (doc: DocumentItem | null) => void;
   targetPage: number;
   setTargetPage: React.Dispatch<React.SetStateAction<number>>;
   highlightQuote: string | null;
@@ -139,6 +142,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   activeAcademicCitation,
   setActiveAcademicCitation,
   activeDoc,
+  setActiveDoc,
   targetPage,
   setTargetPage,
   highlightQuote,
@@ -213,6 +217,26 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 >
                   Web Akademik Terakreditasi (NCBI PubMed)
                 </span>
+              ) : activeDoc ? (
+                <div
+                  className={`hidden sm:inline-flex items-center gap-1.5 text-[10px] font-semibold px-2.5 py-0.5 rounded-full border transition ${
+                    theme === "dark"
+                      ? "bg-teal-500/15 text-teal-300 border-teal-500/30"
+                      : "bg-teal-50 text-teal-800 border-teal-200"
+                  }`}
+                >
+                  <BookOpen className="w-3 h-3 text-teal-500 shrink-0" />
+                  <span className="truncate max-w-[130px] sm:max-w-[200px]">
+                    Fokus: {activeDoc.title}
+                  </span>
+                  <button
+                    onClick={() => setActiveDoc(null)}
+                    className="hover:text-rose-500 cursor-pointer p-0.5 transition ml-0.5"
+                    title="Lepas fokus dokumen (Beralih ke mode percakapan terbuka)"
+                  >
+                    <X className="w-2.5 h-2.5" />
+                  </button>
+                </div>
               ) : (
                 <span
                   className={`hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
@@ -221,7 +245,7 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                       : "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/20"
                   }`}
                 >
-                  Grounding MyLibrary Aktif
+                  Percakapan Terbuka
                 </span>
               )}
             </div>

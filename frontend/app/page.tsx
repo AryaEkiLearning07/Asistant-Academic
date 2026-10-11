@@ -701,7 +701,7 @@ export default function AppRoot() {
         body: JSON.stringify({
           question: q || fallbackPrompt,
           grounding_mode: groundingMode,
-          focused_document_id: null,
+          focused_document_id: activeDoc ? activeDoc.id : null,
           session_id: activeSession,
           attachments: currentAttachments.map((f) => ({
             filename: f.name,
@@ -765,7 +765,7 @@ export default function AppRoot() {
         body: JSON.stringify({
           question: userMsg.text,
           grounding_mode: groundingMode,
-          focused_document_id: null,
+          focused_document_id: activeDoc ? activeDoc.id : null,
           session_id: currentSessionId,
           attachments: (userMsg.attachments || []).map((f) => ({
             filename: f.name,
@@ -811,7 +811,7 @@ export default function AppRoot() {
         body: JSON.stringify({
           question: trimmed,
           grounding_mode: groundingMode,
-          focused_document_id: null,
+          focused_document_id: activeDoc ? activeDoc.id : null,
           session_id: currentSessionId,
           attachments: [],
         }),
@@ -1221,6 +1221,7 @@ export default function AppRoot() {
             activeAcademicCitation={activeAcademicCitation}
             setActiveAcademicCitation={setActiveAcademicCitation}
             activeDoc={activeDoc}
+            setActiveDoc={setActiveDoc}
             targetPage={targetPage}
             setTargetPage={setTargetPage}
             highlightQuote={highlightQuote}

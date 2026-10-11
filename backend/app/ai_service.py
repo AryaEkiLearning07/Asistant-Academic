@@ -23,40 +23,27 @@ CLAUDIA_STYLE_SYSTEM_PROMPT = (
     "Anda adalah EPIONA Academic Research Assistant, asisten kecerdasan akademik riset literatur dan analisis farmasi biomedis.\n\n"
     "IDENTITAS & ARSITEKTUR SISTEM:\n"
     "- Nama: EPIONA Academic Research Assistant.\n"
-    "- Pencipta & Arsitek: Dikembangkan oleh Arya Eki Nur Seputro sebagai platform riset literatur cerdas dengan grounding dokumen 1:1.\n"
-    "- Model Fondasi: Beroperasi menggunakan model bahasa mutakhir Google Gemini via 9Router AI Gateway berlatensi rendah.\n"
-    "- Perbedaan Fundamental dengan ChatGPT, Gemini umum, atau Perplexity:\n"
-    "  1. Grounding Tertutup (Zero Hallucination): Epiona tidak mencari web secara bebas tanpa kendali, melainkan terisolasi khusus pada dokumen akademik MyLibrary milik pengguna.\n"
-    "  2. Sitasi Verbatim Halaman Fisik: Setiap rujukan dipetakan presisi 1:1 ke nomor halaman asli dan dapat langsung dibuka di lembaran fisik dokumen kanan.\n"
-    "  3. Ekstraksi Visual Multi-Modal: Mampu mendeteksi, memotong, dan menampilkan diagram, kurva farmakokinetik, bagan, dan cuplikan lembaran fisik langsung dari dokumen.\n"
-    "  4. Privasi & Isolasi Akademik: Data dan dokumen tersimpan secara pribadi pada laci penyimpanan akun pengguna.\n\n"
-    "GAYA BAHASA & STRUKTUR RANGKUMAN (NATURAL INTELLIGENT AI):\n"
-    "1. Rangkuman Mengalir Alami (Executive Summary): Sampaikan jawaban seperti asisten AI cerdas kelas dunia (ala Claude & NotebookLM) yang mengalir luwes, kaya wawasan, dan tidak kaku.\n"
-    "2. Langsung Ke Inti Masalah: DILARANG mengawali jawaban dengan pembuka template klise ('Saya adalah EPIONA...', 'Halo! Tentu saja...'). Masuklah langsung ke pembahasan atau kesimpulan inti.\n"
-    "3. Struktur Pembahasan yang Bersih: Gunakan paragraf yang terstruktur rapi atau poin-poin analitis jika materi kompleks, sehingga pengguna mendapatkan rangkuman komprehensif yang enak dibaca.\n"
-    "4. Penjelasan Kemampuan & Arsitektur: Jika ditanya mengenai kemampuan atau perbedaan sistem, jelaskan dengan cerdas, lugas, dan variatif tanpa membaca template hafalan.\n"
-    "5. Tipografi Rapi: Gunakan sintaks Markdown standar yang bersih. Penebalan topik gunakan **judul topik:** dan poin daftar gunakan tanda strip (-) atau angka terurut (1., 2.). Jangan menggunakan karakter simbol yang bertumpuk.\n"
-    "6. Transparansi Sumber Dokumen: Jika sintesis melibatkan beberapa dokumen, sebutkan secara ringkas konteks dokumennya di dalam kalimat (misalnya: 'Berdasarkan dokumen X [1]...') agar pengguna langsung memahami asal rujukan dan tidak bingung.\n"
-    "7. Analisis Lampiran Pengguna (Multimodal Visual & Dokumen):\n"
-    "   Jika pengguna melampirkan file dokumen (PDF, Word, Teks, Excel) atau gambar (resep, foto kemasan sediaan farmasi, grafik/kurva farmakokinetik, bagan mekanisme biokimia, tabel data):\n"
-    "   - Bacalah seluruh konten teks atau visual gambar lampiran tersebut secara mendalam.\n"
-    "   - Jadikan isi lampiran sebagai dasar utama untuk menjawab pertanyaan pengguna.\n"
-    "   - Deskripsikan temuan spesifik dari lampiran (angka, nama zat, struktur, interpretasi kurva) secara presisi dan faktual.\n\n"
-    "ATURAN SITASI INLINE & KEJELASAN REFERENSI:\n"
-    "1. INTEGRASI DENGAN NAMA DOKUMEN (SANGAT PENTING):\n"
-    "   Ketika mengutip atau merujuk fakta dari dokumen, sebutkan nama pendek atau topik dokumennya secara eksplisit dalam kalimat sebelum nomor sitasi agar pembaca tidak bingung dari dokumen mana fakta tersebut diambil.\n"
-    "   Contoh yang baik: 'Berdasarkan materi Cisco Packet Tracer [1], topologi bus memanfaatkan kabel koaksial tunggal...'\n"
-    "   Contoh yang baik: 'Pada panduan formulasi farmasi [2], bioavailabilitas oral dipengaruhi oleh...'\n"
-    "2. HANYA SITASI JIKA BENAR-BENAR ADA BUKTI RELEVAN DI TEKS RUJUKAN:\n"
-    "   DILARANG KERAS membuat sitasi spekulatif atau menempelkan nomor sitasi jika materi tidak dibahas dalam rujukan yang diberikan. Jika pertanyaan pengguna tidak ditemukan di dokumen, sampaikan terus terang bahwa materi tidak ditemukan di koleksi MyLibrary saat ini tanpa mereferensikan dokumen yang tidak relevan.\n"
-    "3. KORESPONDENSI INDEKS 1:1 DENGAN ARRAY CITATIONS:\n"
-    "   Nomor sitasi [1], [2], dst. pada teks 'answer' WAJIB bersesuaian persis dengan urutan elemen dalam array 'citations'.\n"
-    "   Setiap item 'citations' wajib memuat 'document_id', 'document_title', 'page_number' halaman asli, dan 'exact_quote' kutipan verbatim asli dari dokumen.\n"
-    "4. PERTANYAAN UMUM / SAPAAN TANPA SITASI:\n"
-    "   Jika pengguna bertanya percakapan santai, kemampuan AI, atau pertanyaan konseptual umum yang tidak ada di dokumen, jawablah secara lugas tanpa menyisipkan sitasi palsu dan kosongkan array 'citations': [].\n\n"
+    "- Pencipta & Arsitek: Dikembangkan oleh Arya Eki Nur Seputro sebagai platform riset literatur cerdas dengan pemahaman mendalam ala Claude dan isolasi sumber ala NotebookLM.\n"
+    "- Model Fondasi: Beroperasi menggunakan model bahasa mutakhir Google Gemini via 9Router AI Gateway berlatensi rendah.\n\n"
+    "GAYA PENJELASAN ALA CLAUDE (NATURAL, INTELLECTUAL & DIRECT TO THE POINT):\n"
+    "1. Langsung Ke Inti Jawaban (Inverted Pyramid): Kalimat pertama WAJIB langsung menjawab inti masalah secara tegas, padat, dan solutif. DILARANG KERAS mengawali respon dengan salam pembuka klise robotik ('Halo!', 'Tentu saja!', 'Saya adalah EPIONA...').\n"
+    "2. Bahasa Manusia yang Mengalir & Enak Dibaca: Uraikan materi dengan nada bicara yang hidup, hangat, dan berbobot seperti dosen atau peneliti senior yang ramah. Hindari jargon yang kaku tanpa penjelasan, dan gunakan analogi intuitif jika konsepnya rumit.\n"
+    "3. Logika Analitis Terstruktur: Uraikan materi kompleks menggunakan paragraf yang bersih atau poin analitis berbobot (definisi esensial, langkah/rumus komputasi, mekanisme aksi, dan implikasi klinis/praktis).\n"
+    "4. Tipografi Bersih: Gunakan sintaks Markdown standar. Penebalan topik gunakan **judul:** dan poin daftar gunakan tanda strip (-) atau angka terurut (1., 2.).\n\n"
+    "ATURAN GROUNDING RUJUKAN (NOTEBOOKLM-STYLE SOFT-FALLBACK):\n"
+    "1. JIKA MATERI ADA DI DOKUMEN RUJUKAN:\n"
+    "   - Jelaskan intisari materinya secara to-the-point dan cantumkan nomor sitasi dalam kurung siku misalnya [1], [2] yang bersesuaian dengan lembar dokumen fisik.\n"
+    "   - Sebutkan konteks dokumen dalam kalimat (contoh: 'Berdasarkan materi Metode Numerik [1]...').\n"
+    "   - Pastikan array 'citations' memuat metadata dokumen yang dikutip.\n"
+    "2. JIKA MATERI TIDAK ADA DI DOKUMEN ATAU PERTANYAAN KONSEPTUAL UMUM (SOFT-FALLBACK):\n"
+    "   - DILARANG MENOLAK MENJAWAB! Jangan pernah menolak dengan kalimat kaku ('Pertanyaan Anda tidak ditemukan di MyLibrary').\n"
+    "   - Jawablah konsep sains, matematika, farmakologi, atau pertanyaan umum tersebut secara komprehensif dan tuntas menggunakan kecerdasan analitis Anda.\n"
+    "   - Di akhir jawaban, berikan catatan sopan ramah:\n"
+    "     *(Catatan: Rincian ini merupakan penjelasan konseptual analitis tambahan, karena materi tersebut tidak diuraikan secara spesifik dalam dokumen referensi yang sedang Anda buka.)*\n"
+    "   - Kosongkan array 'citations': [] untuk pertanyaan tanpa rujukan dokumen.\n\n"
     "FORMAT OUTPUT WAJIB BERUPA JSON MURNI:\n"
     "{\n"
-    '  "answer": "Jawaban terstruktur dengan menyebutkan nama sumber dan sitasi [1] hanya jika relevan...",\n'
+    '  "answer": "Jawaban terstruktur to-the-point ala Claude dengan sitasi [1] hanya jika merujuk dokumen...",\n'
     '  "citations": [\n'
     '    {\n'
     '      "document_id": "ID dokumen",\n'
@@ -146,7 +133,8 @@ class AssistantAiService:
         user_docs: List[Dict[str, Any]],
         relevant_pages: List[Dict[str, Any]],
         chat_history: Optional[List[Dict[str, Any]]] = None,
-        attachments: Optional[List[Dict[str, Any]]] = None
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None
     ) -> ChatResponse:
         """
         Titik masuk utama cerdas untuk percakapan (Hybrid Conversational + Grounded RAG + Multimodal Attachments).
@@ -204,7 +192,8 @@ class AssistantAiService:
                     user_docs=user_docs,
                     chat_history=chat_history,
                     doc_attachments=doc_attachments,
-                    image_attachments=image_attachments
+                    image_attachments=image_attachments,
+                    focused_document_title=focused_document_title
                 )
             except Exception as e:
                 logger.warning(f"9Router error: {e}. Mengalihkan ke Direct Gemini.")
@@ -218,7 +207,8 @@ class AssistantAiService:
                     user_docs=user_docs,
                     chat_history=chat_history,
                     doc_attachments=doc_attachments,
-                    image_attachments=image_attachments
+                    image_attachments=image_attachments,
+                    focused_document_title=focused_document_title
                 )
             except Exception as e:
                 logger.warning(f"Gemini Pool error: {e}. Mengalihkan ke Groq.")
@@ -231,7 +221,8 @@ class AssistantAiService:
                     relevant_pages=relevant_pages if not is_conversational else [],
                     user_docs=user_docs,
                     chat_history=chat_history,
-                    doc_attachments=doc_attachments
+                    doc_attachments=doc_attachments,
+                    focused_document_title=focused_document_title
                 )
             except Exception as e:
                 logger.warning(f"Groq error: {e}. Mengalihkan ke sintesis lokal.")
@@ -243,7 +234,8 @@ class AssistantAiService:
             user_docs=user_docs,
             is_conversational=is_conversational,
             doc_attachments=doc_attachments,
-            image_attachments=image_attachments
+            image_attachments=image_attachments,
+            focused_document_title=focused_document_title
         )
 
     def _call_openai_compatible(
@@ -256,7 +248,8 @@ class AssistantAiService:
         user_docs: List[Dict[str, Any]],
         chat_history: Optional[List[Dict[str, Any]]] = None,
         doc_attachments: Optional[List[Dict[str, Any]]] = None,
-        image_attachments: Optional[List[Dict[str, Any]]] = None
+        image_attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None
     ) -> ChatResponse:
         context_parts = []
         if doc_attachments:
@@ -269,6 +262,13 @@ class AssistantAiService:
         if relevant_pages:
             context_str = self._format_context(relevant_pages, user_docs)
             context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+        elif focused_document_title:
+            context_parts.append(
+                f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
+                f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara tuntas dan manusiawi ala Claude. "
+                f"Di akhir penjelasan, sampaikan catatan santai bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+            )
 
         if context_parts:
             full_context = "\n\n".join(context_parts)
@@ -354,7 +354,8 @@ class AssistantAiService:
         user_docs: List[Dict[str, Any]],
         chat_history: Optional[List[Dict[str, Any]]] = None,
         doc_attachments: Optional[List[Dict[str, Any]]] = None,
-        image_attachments: Optional[List[Dict[str, Any]]] = None
+        image_attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None
     ) -> ChatResponse:
         """Memanggil Google Gemini dengan rotasi multi-key jika terjadi HTTP 429, lengkap dengan multimodal vision & document grounding."""
         if not self.gemini_keys:
@@ -371,6 +372,13 @@ class AssistantAiService:
         if relevant_pages:
             context_str = self._format_context(relevant_pages, user_docs)
             context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+        elif focused_document_title:
+            context_parts.append(
+                f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
+                f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara tuntas dan manusiawi ala Claude. "
+                f"Di akhir penjelasan, sampaikan catatan santai bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+            )
 
         if context_parts:
             full_context = "\n\n".join(context_parts)
@@ -456,7 +464,8 @@ class AssistantAiService:
         relevant_pages: List[Dict[str, Any]],
         user_docs: List[Dict[str, Any]],
         chat_history: Optional[List[Dict[str, Any]]] = None,
-        doc_attachments: Optional[List[Dict[str, Any]]] = None
+        doc_attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None
     ) -> ChatResponse:
         """Memanggil Groq LPU dengan multi-turn chat history dan dokumen lampiran."""
         context_parts = []
@@ -470,6 +479,13 @@ class AssistantAiService:
         if relevant_pages:
             context_str = self._format_context(relevant_pages, user_docs)
             context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+        elif focused_document_title:
+            context_parts.append(
+                f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
+                f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara tuntas dan manusiawi ala Claude. "
+                f"Di akhir penjelasan, sampaikan catatan santai bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+            )
 
         if context_parts:
             full_context = "\n\n".join(context_parts)
@@ -558,7 +574,8 @@ class AssistantAiService:
         user_docs: List[Dict[str, Any]],
         is_conversational: bool,
         doc_attachments: Optional[List[Dict[str, Any]]] = None,
-        image_attachments: Optional[List[Dict[str, Any]]] = None
+        image_attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None
     ) -> ChatResponse:
         """Sintesis deterministik lokal berkarakter Claudia ketika model eksternal offline."""
         # 1. Jika pengguna melampirkan berkas dokumen
@@ -591,6 +608,8 @@ class AssistantAiService:
         # 3. Tangani pertanyaan percakapan, identitas, atau jika tidak ada dokumen spesifik yang cocok
         if is_conversational or not relevant_pages:
             reasoned_answer = self._reason_open_domain_answer(question, user_docs)
+            if focused_document_title and not is_conversational:
+                reasoned_answer += f"\n\n*(Catatan: Rincian ini merupakan penjelasan konseptual analitis tambahan, karena materi tersebut tidak diuraikan secara spesifik dalam modul **{focused_document_title}** yang sedang Anda buka.)*"
             return ChatResponse(
                 answer=reasoned_answer,
                 citations=[]

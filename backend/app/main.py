@@ -545,10 +545,13 @@ def ask_assistant(
             ) and not processed_attachments
 
             top_matches = []
+            focused_doc_title = None
             if not is_conversational:
                 target_docs = user_docs
                 if request.focused_document_id:
                     target_docs = [d for d in user_docs if d["id"] == request.focused_document_id]
+                    if target_docs:
+                        focused_doc_title = target_docs[0]["title"]
 
                 corpus_pages = []
                 for d in target_docs:
@@ -569,7 +572,8 @@ def ask_assistant(
                 )
 
                 # Jika pencarian leksikal halaman belum menemukan hasil tapi kueri menyebut nama/kata kunci judul dokumen
-                if not top_matches and user_docs:
+                # HANYA lakukan afinitas global jika pengguna TIDAK sedang mengunci fokus ke satu dokumen tertentu
+                if not top_matches and not request.focused_document_id and user_docs:
                     def calculate_doc_title_affinity(doc_title: str, query_text: str) -> int:
                         t_clean = doc_title.lower().replace("-", " ").replace("_", " ")
                         affinity = 0
@@ -632,7 +636,8 @@ def ask_assistant(
                 user_docs=user_docs,
                 relevant_pages=top_matches,
                 chat_history=chat_history,
-                attachments=processed_attachments
+                attachments=processed_attachments,
+                focused_document_title=focused_doc_title
             )
 
     # Kesadaran Visual AI (Visual Awareness & Selective Grounding):
