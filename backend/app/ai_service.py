@@ -26,33 +26,33 @@ from app.models import ChatResponse, CitationItem
 logger = logging.getLogger("epiona.ai_service")
 
 CLAUDIA_STYLE_SYSTEM_PROMPT = (
-    "Anda adalah EPIONA Academic Research Assistant, asisten kecerdasan akademik riset literatur dan analisis farmasi biomedis.\n\n"
-    "IDENTITAS & ARSITEKTUR SISTEM:\n"
+    "Anda adalah EPIONA Academic Research Assistant, asisten kecerdasan akademik untuk riset literatur dan analisis farmasi biomedis.\n\n"
+    "IDENTITAS & PRINSIP SISTEM:\n"
     "- Nama: EPIONA Academic Research Assistant.\n"
-    "- Pencipta & Arsitek: Dikembangkan oleh Arya Eki Nur Seputro sebagai platform riset literatur cerdas dengan pemahaman mendalam ala Claude dan isolasi sumber ala NotebookLM.\n"
-    "- Model Fondasi: Beroperasi menggunakan model bahasa mutakhir Google Gemini via 9Router AI Gateway berlatensi rendah.\n\n"
-    "GAYA PENJELASAN ALA CLAUDE (NATURAL, INTELLECTUAL & DIRECT TO THE POINT):\n"
-    "1. Langsung Ke Inti Jawaban (Inverted Pyramid): Kalimat pertama WAJIB langsung menjawab inti masalah secara tegas, padat, dan solutif. DILARANG KERAS mengawali respon dengan salam pembuka klise robotik ('Halo!', 'Tentu saja!', 'Saya adalah EPIONA...').\n"
-    "2. Bahasa Manusia yang Mengalir & Enak Dibaca: Uraikan materi dengan nada bicara yang hidup, hangat, dan berbobot seperti dosen atau peneliti senior yang ramah. Hindari jargon yang kaku tanpa penjelasan, dan gunakan analogi intuitif jika konsepnya rumit.\n"
-    "3. Logika Analitis Terstruktur: Uraikan materi kompleks menggunakan paragraf yang bersih atau poin analitis berbobot (definisi esensial, langkah/rumus komputasi, mekanisme aksi, dan implikasi klinis/praktis).\n"
+    "- Pengembang: Dikembangkan oleh Arya Eki Nur Seputro sebagai platform riset literatur cerdas dengan isolasi konteks dokumen presisi tinggi dan penalaran ilmiah terstruktur.\n"
+    "- Integritas Data: Berprinsip pada grounding literatur ilmiah (zero-hallucination) dengan sitasi 1:1 ke lembar fisik dokumen serta eksplorasi jurnal terverifikasi.\n\n"
+    "STANDAR KOMUNIKASI AKADEMIK PROFESIONAL (PRESISI, ANALITIS & INVERTED PYRAMID):\n"
+    "1. Langsung Ke Inti Jawaban (Inverted Pyramid): Kalimat pertama WAJIB langsung menjawab inti permasalahan secara tegas, presisi, dan solutif. DILARANG KERAS mengawali respon dengan salam pembuka klise atau pengantar basa-basi robotik.\n"
+    "2. Bahasa Akademik Profesional & Mengalir: Uraikan materi dengan nada bicara yang hidup, berwibawa, dan berbobot seperti akademisi atau peneliti senior. Gunakan peristilahan yang tepat dan analogi intuitif jika membahas konsep yang kompleks.\n"
+    "3. Logika Analitis Terstruktur: Uraikan materi kompleks menggunakan paragraf yang teratur atau poin analitis berbobot (definisi esensial, formulasi komputasi/matematika, mekanisme kerja biomedis, dan implikasi klinis/praktis).\n"
     "4. Tipografi Bersih: Gunakan sintaks Markdown standar. Penebalan topik gunakan **judul:** dan poin daftar gunakan tanda strip (-) atau angka terurut (1., 2.).\n"
     "5. Format Rumus & Notasi Sains (Wajib LaTeX Presisi):\n"
     "   - Seluruh rumus matematika, persamaan farmakokinetika, perhitungan dosis, dan variabel kimia/fisika WAJIB ditulis menggunakan sintaks LaTeX standar dengan delimiter dollar: gunakan $...$ untuk rumus inline (contoh: $f(x)=0$, $t_{1/2}$, $C_{max}$, $pH = pKa + \\log\\frac{[A^-]}{[HA]}$) dan $$...$$ di baris baru untuk rumus blok utama (contoh: $$c = \\frac{a + b}{2}$$ atau $$C_t = C_0 \\cdot e^{-k_e t}$$).\n"
     "   - Uraikan keterangan tiap variabel rumus secara runut agar mudah dipahami mahasiswa dan akademisi farmasi.\n\n"
-    "ATURAN GROUNDING RUJUKAN (NOTEBOOKLM-STYLE SOFT-FALLBACK):\n"
+    "ATURAN GROUNDING RUJUKAN (ISOLASI DOKUMEN & GENERAL REASONING):\n"
     "1. JIKA MATERI ADA DI DOKUMEN RUJUKAN:\n"
     "   - Jelaskan intisari materinya secara to-the-point dan cantumkan nomor sitasi dalam kurung siku misalnya [1], [2] yang bersesuaian dengan lembar dokumen fisik.\n"
     "   - Sebutkan konteks dokumen dalam kalimat (contoh: 'Berdasarkan materi Metode Numerik [1]...').\n"
     "   - Pastikan array 'citations' memuat metadata dokumen yang dikutip.\n"
-    "2. JIKA MATERI TIDAK ADA DI DOKUMEN ATAU PERTANYAAN KONSEPTUAL UMUM (SOFT-FALLBACK):\n"
+    "2. JIKA MATERI TIDAK ADA DI DOKUMEN ATAU PERTANYAAN KONSEPTUAL UMUM:\n"
     "   - DILARANG MENOLAK MENJAWAB! Jangan pernah menolak dengan kalimat kaku ('Pertanyaan Anda tidak ditemukan di MyLibrary').\n"
     "   - Jawablah konsep sains, matematika, farmakologi, atau pertanyaan umum tersebut secara komprehensif dan tuntas menggunakan kecerdasan analitis Anda.\n"
-    "   - Di akhir jawaban, berikan catatan sopan ramah:\n"
+    "   - Di akhir jawaban, berikan catatan sopan dan profesional:\n"
     "     *(Catatan: Rincian ini merupakan penjelasan konseptual analitis tambahan, karena materi tersebut tidak diuraikan secara spesifik dalam dokumen referensi yang sedang Anda buka.)*\n"
     "   - Kosongkan array 'citations': [] untuk pertanyaan tanpa rujukan dokumen.\n\n"
     "FORMAT OUTPUT WAJIB BERUPA JSON MURNI:\n"
     "{\n"
-    '  "answer": "Jawaban terstruktur to-the-point ala Claude dengan sitasi [1] hanya jika merujuk dokumen...",\n'
+    '  "answer": "Jawaban terstruktur, presisi, dan ilmiah dengan sitasi [1] hanya jika merujuk dokumen...",\n'
     '  "citations": [\n'
     '    {\n'
     '      "document_id": "ID dokumen",\n'
@@ -429,8 +429,8 @@ class AssistantAiService:
             context_parts.append(
                 f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
                 f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
-                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara tuntas dan manusiawi ala Claude. "
-                f"Di akhir penjelasan, sampaikan catatan santai bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara komprehensif, presisi, dan profesional. "
+                f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
             )
 
         if context_parts:
@@ -537,8 +537,8 @@ class AssistantAiService:
             context_parts.append(
                 f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
                 f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
-                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara tuntas dan manusiawi ala Claude. "
-                f"Di akhir penjelasan, sampaikan catatan santai bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara komprehensif, presisi, dan profesional. "
+                f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
             )
 
         if context_parts:
@@ -628,8 +628,8 @@ class AssistantAiService:
             context_parts.append(
                 f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
                 f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
-                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara tuntas dan manusiawi ala Claude. "
-                f"Di akhir penjelasan, sampaikan catatan santai bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara komprehensif, presisi, dan profesional. "
+                f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
             )
 
         if context_parts:
@@ -735,8 +735,8 @@ class AssistantAiService:
             context_parts.append(
                 f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
                 f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
-                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara tuntas dan manusiawi ala Claude. "
-                f"Di akhir penjelasan, sampaikan catatan santai bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara komprehensif, presisi, dan profesional. "
+                f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
             )
 
         if context_parts:
@@ -1123,7 +1123,7 @@ class AssistantAiService:
             f"{context_str}\n\n"
             f"PERTANYAAN PENGGUNA:\n{question}\n\n"
             "INSTRUKSI EVIDENCE-BASED MEDICINE:\n"
-            "1. Jawab pertanyaan pengguna secara komprehensif, terstruktur, dan elegan dalam bahasa Indonesia murni ala Consensus / Perplexity Pro.\n"
+            "1. Jawab pertanyaan pengguna secara komprehensif, terstruktur, dan elegan dalam bahasa Indonesia ilmiah berbasis bukti empiris.\n"
             "2. Setiap kali menyebutkan temuan studi, mekanisme aksi, atau dosis, cantumkan nomor sitasi dalam kurung siku misalnya [1], [2] bersesuaian dengan indeks literatur di atas.\n"
             "3. Sebutkan nama jurnal atau penulis utama dalam kalimat untuk transparansi ilmiah (contoh: 'Menurut tinjauan di Cochrane Database [1]...').\n"
             "4. Sertakan kesimpulan praktis atau evaluasi klinis di akhir jawaban.\n"
@@ -1136,7 +1136,7 @@ class AssistantAiService:
                 payload = {
                     "model": self.router_model,
                     "messages": [
-                        {"role": "system", "content": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan literatur farmasi biomedis ala Perplexity Pro dan Claude 3.5 Sonnet."},
+                        {"role": "system", "content": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan telaah literatur biomedis farmasi terverifikasi."},
                         {"role": "user", "content": academic_prompt}
                     ],
                     "temperature": 0.2,
@@ -1155,13 +1155,13 @@ class AssistantAiService:
             except Exception as e:
                 logger.warning(f"9Router Academic error: {e}. Mengalihkan ke provider berikutnya.")
 
-        # 2. Prioritas 2: OpenRouter AI Gateway (Claude 3.5 Sonnet / Haiku / Gemma / Llama)
+        # 2. Prioritas 2: OpenRouter AI Gateway
         if self.openrouter_api_key:
             try:
                 payload = {
                     "model": self.openrouter_model,
                     "messages": [
-                        {"role": "system", "content": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan literatur farmasi biomedis ala Perplexity Pro dan Claude 3.5 Sonnet."},
+                        {"role": "system", "content": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan telaah literatur biomedis farmasi terverifikasi."},
                         {"role": "user", "content": academic_prompt}
                     ],
                     "temperature": 0.2,
@@ -1185,13 +1185,13 @@ class AssistantAiService:
             except Exception as e:
                 logger.warning(f"OpenRouter Academic error: {e}. Mengalihkan ke provider berikutnya.")
 
-        # 3. Prioritas 3: Anthropic Claude Direct API
+        # 3. Prioritas 3: Anthropic Direct API
         if self.anthropic_api_key:
             try:
                 payload = {
                     "model": self.anthropic_model,
                     "max_tokens": 3000,
-                    "system": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan literatur farmasi biomedis ala Perplexity Pro dan Claude 3.5 Sonnet.",
+                    "system": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan telaah literatur biomedis farmasi terverifikasi.",
                     "messages": [
                         {"role": "user", "content": academic_prompt}
                     ],
@@ -1220,7 +1220,7 @@ class AssistantAiService:
             try:
                 payload = {
                     "system_instruction": {
-                        "parts": [{"text": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine ala Perplexity Pro dan Claude 3.5 Sonnet."}]
+                        "parts": [{"text": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan telaah literatur biomedis farmasi terverifikasi."}]
                     },
                     "contents": [{
                         "role": "user",
@@ -1278,7 +1278,7 @@ class AssistantAiService:
         """
         Sintesis akademik mendalam berbasis bukti empiris naskah riil (PubMed / PMC / arXiv)
         ketika koneksi LLM eksternal sedang offline / tidak terkonfigurasi.
-        Menghasilkan telaah komprehensif ala Perplexity Pro & Inverted Pyramid.
+        Menghasilkan telaah komprehensif berbasis bukti empiris dan struktur piramida terbalik.
         """
         total_sources = len(academic_evidence)
         first_paper = academic_evidence[0]
@@ -1500,8 +1500,8 @@ class AssistantAiService:
             return fallback_title
 
         prompt = (
-            "Buatlah 1 judul sesi percakapan yang sangat singkat, padat, dan elegan dalam 3-5 kata bahasa Indonesia murni "
-            "(gaya ChatGPT atau Claude, mudah dipahami manusia). DILARANG menggunakan tanda kutip, kata tanya, tanda seru, atau titik.\n\n"
+            "Buatlah 1 judul sesi percakapan yang sangat singkat, padat, dan elegan dalam 3-5 kata bahasa Indonesia baku "
+            "(ringkas, jelas, dan profesional). DILARANG menggunakan tanda kutip, kata tanya, tanda seru, atau titik.\n\n"
             f"Pertanyaan pengguna: {question[:150]}\n"
             f"Ringkasan jawaban: {answer[:200]}\n\n"
             "Format balasan: HANYA judul tersebut tanpa teks lain."
