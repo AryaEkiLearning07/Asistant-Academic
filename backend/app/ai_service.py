@@ -472,7 +472,7 @@ class AssistantAiService:
             "model": model,
             "messages": messages_payload,
             "response_format": {"type": "json_object"},
-            "temperature": 0.5 if (not relevant_pages and not doc_attachments) else 0.15,
+            "temperature": 0.7 if (not relevant_pages and not doc_attachments) else 0.35,
             "max_tokens": 3000
         }
 
@@ -572,7 +572,7 @@ class AssistantAiService:
             "max_tokens": 3000,
             "system": CLAUDIA_STYLE_SYSTEM_PROMPT,
             "messages": messages,
-            "temperature": 0.5 if (not relevant_pages and not doc_attachments) else 0.15
+            "temperature": 0.7 if (not relevant_pages and not doc_attachments) else 0.35
         }
 
         endpoint = f"{self.anthropic_base_url}/v1/messages"
@@ -669,7 +669,7 @@ class AssistantAiService:
             "contents": contents_payload,
             "generationConfig": {
                 "response_mime_type": "application/json",
-                "temperature": 0.5 if (not relevant_pages and not doc_attachments) else 0.15,
+                "temperature": 0.7 if (not relevant_pages and not doc_attachments) else 0.35,
                 "maxOutputTokens": 3000
             }
         }
@@ -754,7 +754,7 @@ class AssistantAiService:
             messages=messages,
             model=self.groq_model,
             response_format={"type": "json_object"},
-            temperature=0.5 if (not relevant_pages and not doc_attachments) else 0.15,
+            temperature=0.7 if (not relevant_pages and not doc_attachments) else 0.35,
             max_tokens=2500
         )
         data = self._safe_parse_json(chat_completion.choices[0].message.content)

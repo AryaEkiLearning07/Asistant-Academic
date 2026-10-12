@@ -602,9 +602,10 @@ export default function AppRoot() {
     fullText: string,
     citations: CitationItem[] = [],
     figures: FigureSnippet[] = [],
-    onComplete?: () => void
+    onComplete?: () => void,
+    targetMessageId?: string
   ) {
-    const msgId = (Date.now() + 1).toString();
+    const msgId = targetMessageId || (Date.now() + 1).toString();
     const initialMsg: Message = {
       id: msgId,
       sender: "assistant",
@@ -614,7 +615,11 @@ export default function AppRoot() {
       timestamp: getNow24Hour(),
     };
 
-    setMessages((prev) => [...prev, initialMsg]);
+    if (targetMessageId) {
+      setMessages((prev) => prev.map((m) => (m.id === targetMessageId ? initialMsg : m)));
+    } else {
+      setMessages((prev) => [...prev, initialMsg]);
+    }
     setIsSending(false);
     setIsTypingStream(true);
     setStreamingMsgId(msgId);
@@ -748,7 +753,7 @@ export default function AppRoot() {
     }
   }
 
-  // Retry Message Handler
+  // Retry Message Handler (Regenerate: me-replace respon lama, bukan menambah pesan baru)
   async function handleRetryUserMessage(userMsg: Message) {
     if (!currentUser || isSending) return;
     setIsSending(true);
@@ -756,6 +761,29 @@ export default function AppRoot() {
       groundingMode === "academic",
       Boolean(userMsg.attachments && userMsg.attachments.length > 0)
     );
+
+    // Cari pesan asisten yang menanggapi pesan user ini
+    const userIdx = messages.findIndex((m) => m.id === userMsg.id);
+    let targetAssistantId: string | null = null;
+    if (userIdx !== -1) {
+      const followingAssistants: string[] = [];
+      for (let i = userIdx + 1; i < messages.length; i++) {
+        if (messages[i].sender === "assistant") {
+          followingAssistants.push(messages[i].id);
+        } else {
+          break;
+        }
+      }
+      if (followingAssistants.length > 0) {
+        targetAssistantId = followingAssistants[0];
+        // Jika ada pesan asisten lebih dari satu berturut-turut (misal error menumpuk), bersihkan sisanya
+        if (followingAssistants.length > 1) {
+          const idsToRemove = new Set(followingAssistants.slice(1));
+          setMessages((prev) => prev.filter((m) => !idsToRemove.has(m.id)));
+        }
+      }
+    }
+
     try {
       const res = await fetch(`${API_BASE}/api/v1/chat`, {
         method: "POST",
@@ -776,30 +804,71 @@ export default function AppRoot() {
       if (!res.ok) throw new Error("Gagal mengulangi respon");
       const data = await res.json();
       stopStatus();
-      streamAssistantReply(data.answer, data.citations || [], data.figures || []);
+      streamAssistantReply(
+        data.answer,
+        data.citations || [],
+        data.figures || [],
+        undefined,
+        targetAssistantId || undefined
+      );
     } catch (err) {
       stopStatus();
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          sender: "assistant",
-          text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
-          timestamp: getNow24Hour(),
-        },
-      ]);
+      if (targetAssistantId) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === targetAssistantId
+              ? {
+                  ...m,
+                  text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
+                  timestamp: getNow24Hour(),
+                }
+              : m
+          )
+        );
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            sender: "assistant",
+            text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
+            timestamp: getNow24Hour(),
+          },
+        ]);
+      }
     } finally {
       setIsSending(false);
     }
   }
 
-  // Edit Message Handler
+  // Edit Message Handler (Me-replace respon lama dari hasil suntingan)
   async function handleSaveEditedMessage(msgId: string) {
     const trimmed = editingMessageText.trim();
     if (!trimmed || !currentUser || isSending) return;
     setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, text: trimmed } : m)));
     setEditingMessageId(null);
     setIsSending(true);
+
+    // Cari pesan asisten yang berada setelah pesan user yang diedit
+    const userIdx = messages.findIndex((m) => m.id === msgId);
+    let targetAssistantId: string | null = null;
+    if (userIdx !== -1) {
+      const followingAssistants: string[] = [];
+      for (let i = userIdx + 1; i < messages.length; i++) {
+        if (messages[i].sender === "assistant") {
+          followingAssistants.push(messages[i].id);
+        } else {
+          break;
+        }
+      }
+      if (followingAssistants.length > 0) {
+        targetAssistantId = followingAssistants[0];
+        if (followingAssistants.length > 1) {
+          const idsToRemove = new Set(followingAssistants.slice(1));
+          setMessages((prev) => prev.filter((m) => !idsToRemove.has(m.id)));
+        }
+      }
+    }
 
     const stopStatus = startProgressiveStatus(groundingMode === "academic", false);
     try {
@@ -817,18 +886,38 @@ export default function AppRoot() {
       if (!res.ok) throw new Error("Gagal mengirim hasil edit");
       const data = await res.json();
       stopStatus();
-      streamAssistantReply(data.answer, data.citations || [], data.figures || []);
+      streamAssistantReply(
+        data.answer,
+        data.citations || [],
+        data.figures || [],
+        undefined,
+        targetAssistantId || undefined
+      );
     } catch (err) {
       stopStatus();
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          sender: "assistant",
-          text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
-          timestamp: getNow24Hour(),
-        },
-      ]);
+      if (targetAssistantId) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === targetAssistantId
+              ? {
+                  ...m,
+                  text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
+                  timestamp: getNow24Hour(),
+                }
+              : m
+          )
+        );
+      } else {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: (Date.now() + 1).toString(),
+            sender: "assistant",
+            text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
+            timestamp: getNow24Hour(),
+          },
+        ]);
+      }
     } finally {
       setIsSending(false);
     }
