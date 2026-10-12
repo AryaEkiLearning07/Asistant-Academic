@@ -226,26 +226,27 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                   }`}
                 >
                   <BookOpen className="w-3 h-3 text-teal-500 shrink-0" />
-                  <span className="truncate max-w-[130px] sm:max-w-[200px]">
-                    Fokus: {activeDoc.title}
+                  <span className="truncate max-w-[130px] sm:max-w-[200px]" title={activeDoc.title}>
+                    Membuka: {activeDoc.title}
                   </span>
                   <button
                     onClick={() => setActiveDoc(null)}
                     className="hover:text-rose-500 cursor-pointer p-0.5 transition ml-0.5"
-                    title="Lepas fokus dokumen (Beralih ke mode percakapan terbuka)"
+                    title="Tutup panel reader dokumen"
                   >
                     <X className="w-2.5 h-2.5" />
                   </button>
                 </div>
               ) : (
                 <span
-                  className={`hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2 py-0.5 rounded-full border ${
+                  className={`hidden sm:inline-flex items-center gap-1 text-[10px] font-semibold px-2.5 py-0.5 rounded-full border ${
                     theme === "dark"
                       ? "bg-[#34D3BE]/15 text-[#34D3BE] border-[#34D3BE]/30"
                       : "bg-[#0F766E]/10 text-[#0F766E] border-[#0F766E]/20"
                   }`}
+                  title="Seluruh modul MyLibrary terhubung secara otomatis"
                 >
-                  Percakapan Terbuka
+                  Koleksi MyLibrary Terpadu
                 </span>
               )}
             </div>

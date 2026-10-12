@@ -547,14 +547,15 @@ def ask_assistant(
             top_matches = []
             focused_doc_title = None
             if not is_conversational:
-                target_docs = user_docs
+                # Opsi A: RAG Cerdas Terpadu Lintas Seluruh Modul MyLibrary
                 if request.focused_document_id:
-                    target_docs = [d for d in user_docs if d["id"] == request.focused_document_id]
-                    if target_docs:
-                        focused_doc_title = target_docs[0]["title"]
+                    matched_focus_doc = next((d for d in user_docs if d["id"] == request.focused_document_id), None)
+                    if matched_focus_doc:
+                        focused_doc_title = matched_focus_doc["title"]
 
+                # Seluruh modul pengguna di MyLibrary saling terhubung
                 corpus_pages = []
-                for d in target_docs:
+                for d in user_docs:
                     pages = storage_mgr.get_document_pages(d["id"])
                     for p in pages:
                         corpus_pages.append({
@@ -565,10 +566,12 @@ def ask_assistant(
                         })
 
                 # Cari dengan kueri normalisasi (menangani salah ketik / typo)
+                # Modul yang sedang dibuka mendapat soft priority boost tanpa memblokir modul lain
                 top_matches = DocumentSearchIndex.search_pages(
                     query=norm_q,
                     pages_corpus=corpus_pages,
-                    top_k=6
+                    top_k=8,
+                    preferred_document_id=request.focused_document_id
                 )
 
                 # Jika pencarian leksikal halaman belum menemukan hasil tapi kueri menyebut nama/kata kunci judul dokumen

@@ -58,7 +58,8 @@ class DocumentSearchIndex:
         query: str,
         pages_corpus: List[Dict[str, Any]],
         top_k: int = 5,
-        min_relevance_score: float = 0.05
+        min_relevance_score: float = 0.05,
+        preferred_document_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """Mencari halaman paling relevan dari korpus berdasarkan bobot istilah BM25-lite.
         
@@ -112,6 +113,10 @@ class DocumentSearchIndex:
             # Untuk kueri jamak (>= 3 kata kunci), minimal harus cocok 2 istilah ATAU memiliki frasa eksak
             if len(query_terms) >= 3 and matched_terms < 2 and clean_query not in text.lower():
                 continue
+
+            # Soft contextual boost jika halaman berasal dari modul yang sedang dibuka di layar
+            if preferred_document_id and item.get("document_id") == preferred_document_id:
+                score += 0.35
 
             scored_results.append({
                 "score": score,
