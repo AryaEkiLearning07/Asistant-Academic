@@ -281,12 +281,6 @@ class AssistantAiService:
             and any(p in norm_q or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
         ) or any(t in q_lower or t in norm_q for t in ["siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu", "apa nama sistem ini", "siapakah kamu", "siapa sih kamu"])
 
-        if is_creator_or_identity and not attachments:
-            return ChatResponse(
-                answer=self._reason_open_domain_answer(question, user_docs),
-                citations=[]
-            )
-
         conversational_triggers = [
             "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
             "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
@@ -303,7 +297,7 @@ class AssistantAiService:
             "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
         ]
         is_conversational = (
-            any(trigger in q_lower or trigger in norm_q for trigger in conversational_triggers)
+            (is_creator_or_identity or any(trigger in q_lower or trigger in norm_q for trigger in conversational_triggers))
             and not attachments
         )
 
@@ -477,7 +471,7 @@ class AssistantAiService:
             "model": model,
             "messages": messages_payload,
             "response_format": {"type": "json_object"},
-            "temperature": 0.1,
+            "temperature": 0.5 if (not relevant_pages and not doc_attachments) else 0.15,
             "max_tokens": 3000
         }
 
@@ -577,7 +571,7 @@ class AssistantAiService:
             "max_tokens": 3000,
             "system": CLAUDIA_STYLE_SYSTEM_PROMPT,
             "messages": messages,
-            "temperature": 0.1
+            "temperature": 0.5 if (not relevant_pages and not doc_attachments) else 0.15
         }
 
         endpoint = f"{self.anthropic_base_url}/v1/messages"
@@ -674,7 +668,7 @@ class AssistantAiService:
             "contents": contents_payload,
             "generationConfig": {
                 "response_mime_type": "application/json",
-                "temperature": 0.1,
+                "temperature": 0.5 if (not relevant_pages and not doc_attachments) else 0.15,
                 "maxOutputTokens": 3000
             }
         }
@@ -759,7 +753,7 @@ class AssistantAiService:
             messages=messages,
             model=self.groq_model,
             response_format={"type": "json_object"},
-            temperature=0.1,
+            temperature=0.5 if (not relevant_pages and not doc_attachments) else 0.15,
             max_tokens=2500
         )
         data = self._safe_parse_json(chat_completion.choices[0].message.content)
