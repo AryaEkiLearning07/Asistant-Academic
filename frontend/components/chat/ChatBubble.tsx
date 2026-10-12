@@ -1,6 +1,8 @@
 import React from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import remarkMath from "remark-math";
+import rehypeKatex from "rehype-katex";
 import {
   RotateCcw,
   Edit2,
@@ -60,14 +62,33 @@ function injectFiguresIntoContent(text: string, figures?: FigureSnippet[]): stri
 }
 
 /**
+ * Normalisasi notasi LaTeX display \[ ... \] dan inline \( ... \)
+ * menjadi format standar $ ... $ dan $$ ... $$ agar dirender presisi oleh KaTeX.
+ */
+function preprocessLatex(text: string): string {
+  if (!text) return "";
+  let processed = text.replace(/\\\[([\s\S]*?)\\\]/g, (_, math) => `\n$$\n${math.trim()}\n$$\n`);
+  processed = processed.replace(/\\\(([\s\S]*?)\\\)/g, (_, math) => `$${math.trim()}$`);
+  return processed;
+}
+
+/**
  * Mengubah token sitasi [1], [1, 2] menjadi link markdown [#cite-1](#cite-1)
+ * dengan melindungi rumus matematika dan blok kode agar tidak rusak.
  */
 function formatInlineCitations(text: string): string {
   if (!text) return "";
-  return text.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (_, nums) => {
-    const list = nums.split(",").map((n: string) => n.trim());
-    return list.map((n: string) => `[${n}](#cite-${n})`).join(" ");
-  });
+  const tokens = text.split(/(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$|```[\s\S]*?```|`[^`\n]+?`)/g);
+  return tokens
+    .map((token, idx) => {
+      // Token ganjil adalah blok math ($...$, $$...$$) atau code block, jangan diubah
+      if (idx % 2 === 1) return token;
+      return token.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (_, nums) => {
+        const list = nums.split(",").map((n: string) => n.trim());
+        return list.map((n: string) => `[${n}](#cite-${n})`).join(" ");
+      });
+    })
+    .join("");
 }
 
 /**
@@ -256,7 +277,8 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
         >
           <div className="leading-relaxed selection:bg-teal-500/20">
             <ReactMarkdown
-              remarkPlugins={[remarkGfm]}
+              remarkPlugins={[remarkGfm, remarkMath]}
+              rehypePlugins={[rehypeKatex]}
               components={{
                 img: ({ src, alt }: any) => {
                   if (src && typeof src === "string" && src.startsWith("#fig-")) {
@@ -494,7 +516,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
                 },
               }}
             >
-              {formatInlineCitations(injectFiguresIntoContent(m.text, m.figures))}
+              {formatInlineCitations(preprocessLatex(injectFiguresIntoContent(m.text, m.figures)))}
             </ReactMarkdown>
             {isTypingStream && streamingMsgId === m.id && (
               <span

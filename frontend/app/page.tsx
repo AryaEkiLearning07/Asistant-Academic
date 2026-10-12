@@ -287,9 +287,7 @@ export default function AppRoot() {
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents);
-        if (data.documents.length > 0 && !activeDoc) {
-          setActiveDoc(data.documents[0]);
-        }
+        // Tidak auto-select dokumen pertama agar default selalu Percakapan Terbuka
       }
     } catch (err) {
       console.error("Gagal mengambil dokumen:", err);

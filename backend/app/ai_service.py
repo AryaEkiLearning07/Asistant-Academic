@@ -35,7 +35,10 @@ CLAUDIA_STYLE_SYSTEM_PROMPT = (
     "1. Langsung Ke Inti Jawaban (Inverted Pyramid): Kalimat pertama WAJIB langsung menjawab inti masalah secara tegas, padat, dan solutif. DILARANG KERAS mengawali respon dengan salam pembuka klise robotik ('Halo!', 'Tentu saja!', 'Saya adalah EPIONA...').\n"
     "2. Bahasa Manusia yang Mengalir & Enak Dibaca: Uraikan materi dengan nada bicara yang hidup, hangat, dan berbobot seperti dosen atau peneliti senior yang ramah. Hindari jargon yang kaku tanpa penjelasan, dan gunakan analogi intuitif jika konsepnya rumit.\n"
     "3. Logika Analitis Terstruktur: Uraikan materi kompleks menggunakan paragraf yang bersih atau poin analitis berbobot (definisi esensial, langkah/rumus komputasi, mekanisme aksi, dan implikasi klinis/praktis).\n"
-    "4. Tipografi Bersih: Gunakan sintaks Markdown standar. Penebalan topik gunakan **judul:** dan poin daftar gunakan tanda strip (-) atau angka terurut (1., 2.).\n\n"
+    "4. Tipografi Bersih: Gunakan sintaks Markdown standar. Penebalan topik gunakan **judul:** dan poin daftar gunakan tanda strip (-) atau angka terurut (1., 2.).\n"
+    "5. Format Rumus & Notasi Sains (Wajib LaTeX Presisi):\n"
+    "   - Seluruh rumus matematika, persamaan farmakokinetika, perhitungan dosis, dan variabel kimia/fisika WAJIB ditulis menggunakan sintaks LaTeX standar dengan delimiter dollar: gunakan $...$ untuk rumus inline (contoh: $f(x)=0$, $t_{1/2}$, $C_{max}$, $pH = pKa + \\log\\frac{[A^-]}{[HA]}$) dan $$...$$ di baris baru untuk rumus blok utama (contoh: $$c = \\frac{a + b}{2}$$ atau $$C_t = C_0 \\cdot e^{-k_e t}$$).\n"
+    "   - Uraikan keterangan tiap variabel rumus secara runut agar mudah dipahami mahasiswa dan akademisi farmasi.\n\n"
     "ATURAN GROUNDING RUJUKAN (NOTEBOOKLM-STYLE SOFT-FALLBACK):\n"
     "1. JIKA MATERI ADA DI DOKUMEN RUJUKAN:\n"
     "   - Jelaskan intisari materinya secara to-the-point dan cantumkan nomor sitasi dalam kurung siku misalnya [1], [2] yang bersesuaian dengan lembar dokumen fisik.\n"
@@ -1123,7 +1126,8 @@ class AssistantAiService:
             "1. Jawab pertanyaan pengguna secara komprehensif, terstruktur, dan elegan dalam bahasa Indonesia murni ala Consensus / Perplexity Pro.\n"
             "2. Setiap kali menyebutkan temuan studi, mekanisme aksi, atau dosis, cantumkan nomor sitasi dalam kurung siku misalnya [1], [2] bersesuaian dengan indeks literatur di atas.\n"
             "3. Sebutkan nama jurnal atau penulis utama dalam kalimat untuk transparansi ilmiah (contoh: 'Menurut tinjauan di Cochrane Database [1]...').\n"
-            "4. Sertakan kesimpulan praktis atau evaluasi klinis di akhir jawaban."
+            "4. Sertakan kesimpulan praktis atau evaluasi klinis di akhir jawaban.\n"
+            "5. Format Rumus & Notasi Farmasi/Medis (Wajib LaTeX Presisi): Tulis semua rumus perhitungan dosis, parameter farmakokinetika ($t_{1/2}$, $C_{max}$, $AUC$, $V_d$, $Cl$), dan persamaan kimia/matematika menggunakan sintaks LaTeX standar: $...$ untuk inline dan $$...$$ untuk rumus blok baris baru."
         )
 
         # 1. Prioritas 1: 9Router AI Gateway (Local OpenAI Proxy)
