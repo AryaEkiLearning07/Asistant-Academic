@@ -794,6 +794,9 @@ class UpdateAiSettingsRequest(BaseModel):
     openrouter_model: Optional[str] = None
     anthropic_api_key: Optional[str] = None
     anthropic_model: Optional[str] = None
+    router_base_url: Optional[str] = None
+    router_api_key: Optional[str] = None
+    router_model: Optional[str] = None
 
 class TestAiConnectionRequest(BaseModel):
     provider: str
@@ -805,6 +808,17 @@ class TestAiConnectionRequest(BaseModel):
 def get_ai_settings(current_user: dict = Depends(get_current_user)):
     """Mengambil status engine AI aktif (OpenRouter / Anthropic / Gemini / Groq / Lokal)."""
     return ai_service.get_status()
+
+@app.get("/api/v1/settings/router/models")
+def get_router_available_models(current_user: dict = Depends(get_current_user)):
+    """Mengambil daftar model yang aktif di 9Router Gateway lokal."""
+    models = ai_service.get_router_models()
+    return {
+        "status": "success",
+        "models": models,
+        "is_alive": ai_service._is_router_alive(),
+        "current_model": ai_service.router_model
+    }
 
 @app.post("/api/v1/settings/ai/test")
 def test_ai_connection(payload: TestAiConnectionRequest, current_user: dict = Depends(get_current_user)):
@@ -827,7 +841,10 @@ def update_ai_settings(payload: UpdateAiSettingsRequest, current_user: dict = De
         openrouter_key=payload.openrouter_api_key,
         openrouter_model=payload.openrouter_model,
         anthropic_key=payload.anthropic_api_key,
-        anthropic_model=payload.anthropic_model
+        anthropic_model=payload.anthropic_model,
+        router_url=payload.router_base_url,
+        router_key=payload.router_api_key,
+        router_model=payload.router_model
     )
     from app.config import ROOT_DIR
     env_paths = [ROOT_DIR / ".env", ROOT_DIR / "backend" / ".env"]
@@ -860,6 +877,12 @@ def update_ai_settings(payload: UpdateAiSettingsRequest, current_user: dict = De
                 env_dict["ANTHROPIC_API_KEY"] = payload.anthropic_api_key.strip()
             if payload.anthropic_model is not None:
                 env_dict["ANTHROPIC_MODEL"] = payload.anthropic_model.strip()
+            if payload.router_base_url is not None:
+                env_dict["ROUTER_BASE_URL"] = payload.router_base_url.strip()
+            if payload.router_api_key is not None:
+                env_dict["ROUTER_API_KEY"] = payload.router_api_key.strip()
+            if payload.router_model is not None:
+                env_dict["ROUTER_MODEL"] = payload.router_model.strip()
                 
             out_content = "\n".join([f"{k}={v}" for k, v in env_dict.items()]) + "\n"
             env_path.write_text(out_content, encoding="utf-8")

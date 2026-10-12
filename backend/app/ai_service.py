@@ -160,6 +160,30 @@ class AssistantAiService:
         if router_model:
             self.router_model = router_model.strip()
 
+    @staticmethod
+    def _extract_text_from_raw_openai(raw_text: str) -> str:
+        """Ekstraksi teks bersih dari respon OpenAI-compatible (mendukung JSON utuh maupun SSE streaming)."""
+        accumulated = ""
+        if "data: " in raw_text:
+            for line in raw_text.splitlines():
+                line = line.strip()
+                if line.startswith("data: ") and not line.endswith("[DONE]"):
+                    chunk_json = line[6:].strip()
+                    try:
+                        chunk = json.loads(chunk_json)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        if "content" in delta and delta["content"]:
+                            accumulated += delta["content"]
+                    except Exception:
+                        pass
+        else:
+            try:
+                res_data = json.loads(raw_text)
+                accumulated = res_data["choices"][0]["message"]["content"]
+            except Exception:
+                accumulated = raw_text
+        return accumulated
+
     def get_status(self) -> Dict[str, Any]:
         """Status komprehensif seluruh engine AI terpasang."""
         is_router_on = self._is_router_alive()
@@ -168,7 +192,9 @@ class AssistantAiService:
         is_gemini_on = len(self.gemini_keys) > 0
         is_groq_on = bool(self.groq_client)
 
-        if is_openrouter_on:
+        if is_router_on:
+            active_engine = f"9Router Gateway ({self.router_model})"
+        elif is_openrouter_on:
             active_engine = f"OpenRouter ({self.openrouter_model})"
         elif is_anthropic_on:
             active_engine = f"Anthropic Claude ({self.anthropic_model})"
@@ -176,8 +202,6 @@ class AssistantAiService:
             active_engine = f"Google Gemini Pool ({self.gemini_model})"
         elif is_groq_on:
             active_engine = f"Groq LPU ({self.groq_model})"
-        elif is_router_on:
-            active_engine = f"Local Gateway ({self.router_model})"
         else:
             active_engine = "Sintesis Ilmiah Offline"
 
@@ -206,10 +230,26 @@ class AssistantAiService:
                 f"{self.router_base_url}/models",
                 headers={"Authorization": f"Bearer {self.router_api_key}"}
             )
-            with urllib.request.urlopen(req, timeout=1.0) as res:
+            with urllib.request.urlopen(req, timeout=1.5) as res:
                 return res.status == 200
         except Exception:
             return False
+
+    def get_router_models(self) -> List[str]:
+        """Mengambil daftar model yang aktif dan siap pakai di 9Router."""
+        if not self._is_router_alive():
+            return []
+        try:
+            req = urllib.request.Request(
+                f"{self.router_base_url}/models",
+                headers={"Authorization": f"Bearer {self.router_api_key}"}
+            )
+            with urllib.request.urlopen(req, timeout=2.0) as res:
+                data = json.loads(res.read().decode("utf-8"))
+                return [m.get("id") for m in data.get("data", []) if m.get("id")]
+        except Exception as e:
+            logger.warning(f"Gagal mengambil daftar model dari 9Router: {e}")
+            return []
 
     def answer_chat(
         self,
@@ -264,7 +304,26 @@ class AssistantAiService:
             and not attachments
         )
 
-        # 2. Prioritas 1: OpenRouter AI Gateway (Dukungan Model Claude, Gemma, Llama, DeepSeek)
+        # 2. Prioritas 1: 9Router AI Gateway (Local OpenAI-compatible proxy)
+        if self._is_router_alive():
+            try:
+                return self._call_openai_compatible(
+                    endpoint=f"{self.router_base_url}/chat/completions",
+                    api_key=self.router_api_key,
+                    model=self.router_model,
+                    question=question,
+                    relevant_pages=relevant_pages if not is_conversational else [],
+                    user_docs=user_docs,
+                    chat_history=chat_history,
+                    doc_attachments=doc_attachments,
+                    image_attachments=image_attachments,
+                    focused_document_title=focused_document_title,
+                    is_openrouter=False
+                )
+            except Exception as e:
+                logger.warning(f"9Router error: {e}. Mengalihkan ke provider berikutnya.")
+
+        # 3. Prioritas 2: OpenRouter AI Gateway (Dukungan Model Claude, Gemma, Llama, DeepSeek)
         if self.openrouter_api_key:
             try:
                 return self._call_openai_compatible(
@@ -283,7 +342,7 @@ class AssistantAiService:
             except Exception as e:
                 logger.warning(f"OpenRouter error: {e}. Mengalihkan ke provider berikutnya.")
 
-        # 3. Prioritas 2: Anthropic Direct API / Proxy
+        # 4. Prioritas 3: Anthropic Direct API / Proxy
         if self.anthropic_api_key:
             try:
                 return self._call_anthropic_direct(
@@ -297,25 +356,6 @@ class AssistantAiService:
                 )
             except Exception as e:
                 logger.warning(f"Anthropic error: {e}. Mengalihkan ke provider berikutnya.")
-
-        # 4. Prioritas 3: 9Router AI Gateway (Local OpenAI-compatible proxy)
-        if self._is_router_alive():
-            try:
-                return self._call_openai_compatible(
-                    endpoint=f"{self.router_base_url}/chat/completions",
-                    api_key=self.router_api_key,
-                    model=self.router_model,
-                    question=question,
-                    relevant_pages=relevant_pages if not is_conversational else [],
-                    user_docs=user_docs,
-                    chat_history=chat_history,
-                    doc_attachments=doc_attachments,
-                    image_attachments=image_attachments,
-                    focused_document_title=focused_document_title,
-                    is_openrouter=False
-                )
-            except Exception as e:
-                logger.warning(f"9Router error: {e}. Mengalihkan ke Direct Gemini.")
 
         # 5. Prioritas 4: Direct Google Gemini (Multi-Key Pool Failover + Native Multimodal Vision)
         if self.gemini_keys:
@@ -463,25 +503,7 @@ class AssistantAiService:
             else:
                 raise err
 
-        accumulated_text = ""
-        if "data: " in raw_resp:
-            for line in raw_resp.splitlines():
-                line = line.strip()
-                if line.startswith("data: ") and not line.endswith("[DONE]"):
-                    json_str = line[6:].strip()
-                    try:
-                        chunk = json.loads(json_str)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        if "content" in delta and delta["content"]:
-                            accumulated_text += delta["content"]
-                    except Exception:
-                        pass
-        else:
-            try:
-                res_data = json.loads(raw_resp)
-                accumulated_text = res_data["choices"][0]["message"]["content"]
-            except Exception:
-                accumulated_text = raw_resp
+        accumulated_text = self._extract_text_from_raw_openai(raw_resp)
 
         data = self._safe_parse_json(accumulated_text)
         return self._build_chat_response(data, relevant_pages)
@@ -1104,7 +1126,32 @@ class AssistantAiService:
             "4. Sertakan kesimpulan praktis atau evaluasi klinis di akhir jawaban."
         )
 
-        # 1. Prioritas 1: OpenRouter AI Gateway (Claude 3.5 Sonnet / Haiku / Gemma / Llama)
+        # 1. Prioritas 1: 9Router AI Gateway (Local OpenAI Proxy)
+        if self._is_router_alive():
+            try:
+                payload = {
+                    "model": self.router_model,
+                    "messages": [
+                        {"role": "system", "content": "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan literatur farmasi biomedis ala Perplexity Pro dan Claude 3.5 Sonnet."},
+                        {"role": "user", "content": academic_prompt}
+                    ],
+                    "temperature": 0.2,
+                    "max_tokens": 2500
+                }
+                req = urllib.request.Request(
+                    f"{self.router_base_url}/chat/completions",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.router_api_key}"},
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=30) as resp:
+                    raw_text = resp.read().decode("utf-8")
+                ai_answer = self._extract_text_from_raw_openai(raw_text)
+                return ChatResponse(answer=ai_answer, citations=citations)
+            except Exception as e:
+                logger.warning(f"9Router Academic error: {e}. Mengalihkan ke provider berikutnya.")
+
+        # 2. Prioritas 2: OpenRouter AI Gateway (Claude 3.5 Sonnet / Haiku / Gemma / Llama)
         if self.openrouter_api_key:
             try:
                 payload = {
@@ -1129,13 +1176,12 @@ class AssistantAiService:
                 )
                 with urllib.request.urlopen(req, timeout=25) as resp:
                     raw_text = resp.read().decode("utf-8")
-                res_data = json.loads(raw_text)
-                ai_answer = res_data["choices"][0]["message"]["content"]
+                ai_answer = self._extract_text_from_raw_openai(raw_text)
                 return ChatResponse(answer=ai_answer, citations=citations)
             except Exception as e:
                 logger.warning(f"OpenRouter Academic error: {e}. Mengalihkan ke provider berikutnya.")
 
-        # 2. Prioritas 2: Anthropic Claude Direct API
+        # 3. Prioritas 3: Anthropic Claude Direct API
         if self.anthropic_api_key:
             try:
                 payload = {
@@ -1164,32 +1210,6 @@ class AssistantAiService:
                 return ChatResponse(answer=ai_answer, citations=citations)
             except Exception as e:
                 logger.warning(f"Anthropic Academic error: {e}. Mengalihkan ke provider berikutnya.")
-
-        # 3. Prioritas 3: 9Router AI Gateway (Local OpenAI Proxy)
-        if self._is_router_alive():
-            try:
-                payload = {
-                    "model": self.router_model,
-                    "messages": [
-                        {"role": "system", "content": "Anda adalah asisten sintesis literatur farmasi klinis & riset kedokteran berbasis bukti."},
-                        {"role": "user", "content": academic_prompt}
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 2500
-                }
-                req = urllib.request.Request(
-                    f"{self.router_base_url}/chat/completions",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.router_api_key}"},
-                    method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=15) as resp:
-                    raw_text = resp.read().decode("utf-8")
-                res_data = json.loads(raw_text)
-                ai_answer = res_data["choices"][0]["message"]["content"]
-                return ChatResponse(answer=ai_answer, citations=citations)
-            except Exception as e:
-                logger.warning(f"9Router Academic error: {e}. Mengalihkan ke Gemini.")
 
         # 4. Prioritas 4: Google Gemini Pool (Direct AI Studio)
         if self.gemini_keys:
@@ -1384,6 +1404,29 @@ class AssistantAiService:
                 latency = int((time.time() - start_time) * 1000)
                 reply = resp_data["content"][0]["text"]
                 return {"success": True, "latency_ms": latency, "provider": "Anthropic Claude", "model": m_name, "reply": reply.strip()}
+
+            elif provider in ("router", "9router"):
+                b_url = (base_url or self.router_base_url or "http://localhost:20128/v1").rstrip("/")
+                m_name = model or self.router_model or "gemini/gemini-3.8-flash"
+                payload = {
+                    "model": m_name,
+                    "messages": [{"role": "user", "content": "Ping test. Balas: PONG"}],
+                    "max_tokens": 10
+                }
+                req = urllib.request.Request(
+                    f"{b_url}/chat/completions",
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {api_key.strip()}"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=12) as resp:
+                    raw_resp = resp.read().decode("utf-8")
+                latency = int((time.time() - start_time) * 1000)
+                reply = self._extract_text_from_raw_openai(raw_resp)
+                return {"success": True, "latency_ms": latency, "provider": "9Router Gateway", "model": m_name, "reply": reply.strip()}
 
             else:
                 return {"success": False, "error": f"Provider '{provider}' tidak dikenal."}

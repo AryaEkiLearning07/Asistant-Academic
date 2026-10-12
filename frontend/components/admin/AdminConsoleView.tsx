@@ -86,9 +86,10 @@ export function AdminConsoleView({
   apiBase,
 }: AdminConsoleViewProps) {
   const [aiSettings, setAiSettings] = useState<any | null>(null);
-  const [selectedProvider, setSelectedProvider] = useState<"openrouter" | "gemini" | "groq" | "anthropic">("openrouter");
+  const [selectedProvider, setSelectedProvider] = useState<"9router" | "openrouter" | "gemini" | "groq" | "anthropic">("9router");
   const [providerApiKey, setProviderApiKey] = useState("");
-  const [providerModel, setProviderModel] = useState("google/gemma-4-31b-it:free");
+  const [providerModel, setProviderModel] = useState("gemini/gemini-3.8-flash");
+  const [routerModelsList, setRouterModelsList] = useState<string[]>([]);
   const [showApiKey, setShowApiKey] = useState(false);
   const [testResult, setTestResult] = useState<{ loading: boolean; success?: boolean; latency_ms?: number; message?: string } | null>(null);
   const [saveStatus, setSaveStatus] = useState<{ loading: boolean; message?: string; success?: boolean } | null>(null);
@@ -101,7 +102,10 @@ export function AdminConsoleView({
         .then((r) => r.json())
         .then((data) => {
           setAiSettings(data);
-          if (data.openrouter_active) {
+          if (data.router_available) {
+            setSelectedProvider("9router");
+            setProviderModel(data.router_model || "gemini/gemini-3.8-flash");
+          } else if (data.openrouter_active) {
             setSelectedProvider("openrouter");
             setProviderModel(data.openrouter_model || "google/gemma-4-31b-it:free");
           } else if (data.anthropic_active) {
@@ -116,11 +120,23 @@ export function AdminConsoleView({
           }
         })
         .catch((e) => console.error("Error fetching AI settings:", e));
+
+      fetch(`${apiBase}/api/v1/settings/router/models`, {
+        headers: { Authorization: `Bearer ${currentUser.token}` }
+      })
+        .then((r) => r.json())
+        .then((data) => {
+          if (data?.models && Array.isArray(data.models) && data.models.length > 0) {
+            setRouterModelsList(data.models);
+          }
+        })
+        .catch(() => {});
     }
   }, [adminActiveTab, currentUser, apiBase]);
 
   const handleTestConnection = async () => {
-    if (!providerApiKey.trim()) {
+    const keyToUse = providerApiKey.trim() || (selectedProvider === "9router" ? (aiSettings?.router_api_key || "sk-8b8f73120ff72a48-yrjltv-be11962c") : "");
+    if (!keyToUse) {
       setTestResult({ loading: false, success: false, message: "Masukkan API Key terlebih dahulu untuk pengujian." });
       return;
     }
@@ -134,7 +150,7 @@ export function AdminConsoleView({
         },
         body: JSON.stringify({
           provider: selectedProvider,
-          api_key: providerApiKey.trim(),
+          api_key: keyToUse,
           model: providerModel.trim() || undefined
         })
       });
@@ -162,7 +178,10 @@ export function AdminConsoleView({
     setSaveStatus({ loading: true });
     try {
       const payload: any = {};
-      if (selectedProvider === "openrouter") {
+      if (selectedProvider === "9router") {
+        payload.router_model = providerModel.trim();
+        if (providerApiKey.trim()) payload.router_api_key = providerApiKey.trim();
+      } else if (selectedProvider === "openrouter") {
         payload.openrouter_api_key = providerApiKey.trim();
         payload.openrouter_model = providerModel.trim();
       } else if (selectedProvider === "gemini") {
@@ -987,6 +1006,27 @@ export function AdminConsoleView({
                 <button
                   type="button"
                   onClick={() => {
+                    setSelectedProvider("9router");
+                    if (aiSettings?.router_model) setProviderModel(aiSettings.router_model);
+                    else setProviderModel("gemini/gemini-3.8-flash");
+                    setTestResult(null);
+                  }}
+                  className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition cursor-pointer shrink-0 ${
+                    selectedProvider === "9router"
+                      ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-400 shadow-xs"
+                      : theme === "dark"
+                      ? "border-[#2A333B] bg-[#12161A] text-[#9AA9B5] hover:text-[#E6EDF2]"
+                      : "border-[#DCE3E8] bg-slate-50 text-[#5B6B78] hover:text-[#12202B]"
+                  }`}
+                >
+                  <Zap className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>9Router Gateway (Lokal)</span>
+                  <span className="text-[9px] px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-300 font-bold">AKTIF</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
                     setSelectedProvider("openrouter");
                     if (aiSettings?.openrouter_model) setProviderModel(aiSettings.openrouter_model);
                     else setProviderModel("google/gemma-4-31b-it:free");
@@ -1073,6 +1113,33 @@ export function AdminConsoleView({
                 <span className={`text-[11px] font-semibold mr-1 ${theme === "dark" ? "text-[#9AA9B5]" : "text-[#5B6B78]"}`}>
                   Preset Model:
                 </span>
+                {selectedProvider === "9router" && (
+                  <>
+                    {(routerModelsList.length > 0
+                      ? routerModelsList
+                      : [
+                          "gemini/gemini-3.8-flash",
+                          "gemini/gemini-3.7-flash",
+                          "gemini/gemini-3.6-flash",
+                          "gemini/gemini-3.5-flash-lite",
+                          "gemini/gemini-3.1-pro-preview"
+                        ]
+                    ).map((mId) => (
+                      <button
+                        key={mId}
+                        type="button"
+                        onClick={() => setProviderModel(mId)}
+                        className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
+                          providerModel === mId
+                            ? "bg-emerald-500/20 border-emerald-500/40 text-emerald-300 font-bold"
+                            : "border-slate-700 hover:border-emerald-500/40 text-slate-300"
+                        }`}
+                      >
+                        {mId.replace("gemini/", "")}
+                      </button>
+                    ))}
+                  </>
+                )}
                 {selectedProvider === "openrouter" && (
                   <>
                     <button
@@ -1243,7 +1310,9 @@ export function AdminConsoleView({
                       value={providerApiKey}
                       onChange={(e) => setProviderApiKey(e.target.value)}
                       placeholder={
-                        selectedProvider === "openrouter"
+                        selectedProvider === "9router"
+                          ? (aiSettings?.router_api_key || "sk-8b8f73120ff72a48-yrjltv-be11962c")
+                          : selectedProvider === "openrouter"
                           ? "sk-or-v1-..."
                           : selectedProvider === "gemini"
                           ? "AIzaSy..."
@@ -1264,6 +1333,7 @@ export function AdminConsoleView({
               {/* HELPER GUIDE LINK */}
               <div className={`text-[11px] flex items-center justify-between ${theme === "dark" ? "text-[#9AA9B5]" : "text-[#5B6B78]"}`}>
                 <span>
+                  {selectedProvider === "9router" && "9Router berjalan lokal di http://localhost:20128. Tambahkan akun Google/Claude/OpenRouter di Web Dashboard 9Router."}
                   {selectedProvider === "openrouter" && "Dapatkan key gratis di openrouter.ai/keys (pilih model :free untuk 0 biaya)."}
                   {selectedProvider === "gemini" && "Dapatkan key resmi 100% gratis tanpa kartu kredit di aistudio.google.com/app/apikey."}
                   {selectedProvider === "groq" && "Dapatkan key gratis super cepat di console.groq.com/keys."}
