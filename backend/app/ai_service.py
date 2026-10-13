@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import re
 import urllib.request
 import urllib.error
@@ -12,9 +13,13 @@ from app.config import (
     OPENROUTER_API_KEY,
     OPENROUTER_BASE_URL,
     OPENROUTER_MODEL,
+    OPENROUTER_DEFAULT_MODEL,
+    OPENROUTER_FAST_MODEL,
     ANTHROPIC_API_KEY,
     ANTHROPIC_BASE_URL,
     ANTHROPIC_MODEL,
+    ANTHROPIC_DEFAULT_MODEL,
+    ANTHROPIC_FAST_MODEL,
     GEMINI_API_KEY,
     GEMINI_API_KEYS,
     GEMINI_MODEL,
@@ -67,12 +72,16 @@ class AssistantAiService:
         # OpenRouter Gateway
         self.openrouter_api_key = openrouter_api_key or ""
         self.openrouter_base_url = (openrouter_base_url or "https://openrouter.ai/api/v1").rstrip("/")
-        self.openrouter_model = openrouter_model or "google/gemma-4-31b-it:free"
+        self.openrouter_model = openrouter_model or OPENROUTER_MODEL
+        self.openrouter_default_model = os.getenv("OPENROUTER_DEFAULT_MODEL", self.openrouter_model)
+        self.openrouter_fast_model = os.getenv("OPENROUTER_FAST_MODEL", OPENROUTER_FAST_MODEL)
 
         # Anthropic Direct API / Proxy
         self.anthropic_api_key = anthropic_api_key or ""
         self.anthropic_base_url = (anthropic_base_url or "https://api.anthropic.com").rstrip("/")
-        self.anthropic_model = anthropic_model or "claude-3-5-haiku-20241022"
+        self.anthropic_model = anthropic_model or ANTHROPIC_MODEL
+        self.anthropic_default_model = os.getenv("ANTHROPIC_DEFAULT_MODEL", self.anthropic_model)
+        self.anthropic_fast_model = os.getenv("ANTHROPIC_FAST_MODEL", ANTHROPIC_FAST_MODEL)
         
         # Koleksi API Key Gemini (Multi-Key Pool)
         self.gemini_keys: List[str] = []
@@ -163,11 +172,11 @@ class AssistantAiService:
         import json as _json
         import re as _re
 
-        # 1. Coba Anthropic Direct (Claude 3.5 Haiku)
+        # 1. Coba Anthropic Direct (Claude Haiku 5.5)
         if self.anthropic_api_key:
             try:
                 payload = {
-                    "model": "claude-3-5-haiku-20241022",
+                    "model": "claude-haiku-5-5",
                     "max_tokens": 150,
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.0
@@ -200,7 +209,7 @@ class AssistantAiService:
         if self.openrouter_api_key:
             try:
                 payload = {
-                    "model": "anthropic/claude-3.5-haiku",
+                    "model": "anthropic/claude-haiku-5.5",
                     "messages": [{"role": "user", "content": prompt}],
                     "temperature": 0.0,
                     "max_tokens": 150
@@ -471,7 +480,7 @@ class AssistantAiService:
                     logger.warning(f"Preferred Anthropic error: {e}. Mengalihkan ke OpenRouter jika tersedia.")
 
             if self.openrouter_api_key:
-                claude_target_model = self.openrouter_model if "claude" in self.openrouter_model.lower() else "anthropic/claude-3.5-sonnet"
+                claude_target_model = self.openrouter_model if "claude" in self.openrouter_model.lower() else "anthropic/claude-sonnet-5.5"
                 try:
                     return self._call_openai_compatible(
                         endpoint=f"{self.openrouter_base_url}/chat/completions",
@@ -853,7 +862,6 @@ class AssistantAiService:
             headers={
                 "x-api-key": self.anthropic_api_key,
                 "anthropic-version": "2023-06-01",
-                "anthropic-beta": "prompt-caching-2024-07-25",
                 "content-type": "application/json"
             },
             method="POST"
@@ -865,6 +873,378 @@ class AssistantAiService:
         raw_text = anthropic_data["content"][0]["text"]
         data = self._safe_parse_json(raw_text)
         return self._build_chat_response(data, relevant_pages)
+
+    def _stream_anthropic(
+        self,
+        question: str,
+        relevant_pages: List[Dict[str, Any]],
+        user_docs: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        doc_attachments: Optional[List[Dict[str, Any]]] = None,
+        image_attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None
+    ):
+        """Streaming token bertahap langsung dari Anthropic Claude Messages API."""
+        context_parts = []
+        if doc_attachments:
+            for da in doc_attachments:
+                fname = da.get("filename", "Dokumen Lampiran")
+                txt = da.get("extracted_text", "").strip()[:8000]
+                if txt:
+                    context_parts.append(f"--- DOKUMEN LAMPIRAN PENGGUNA ({fname}) ---\n{txt}")
+
+        if relevant_pages:
+            context_str = self._format_context(relevant_pages, user_docs)
+            context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+        elif focused_document_title:
+            context_parts.append(
+                f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
+                f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara komprehensif, presisi, dan profesional. "
+                f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+            )
+
+        if context_parts:
+            full_context = "\n\n".join(context_parts)
+            user_prompt = f"KONTEKS RUJUKAN:\n{full_context}\n\nPERTANYAAN PENGGUNA:\n{question}"
+        else:
+            user_prompt = question
+
+        messages = []
+        if chat_history:
+            for h in chat_history:
+                sender_role = "user" if h.get("sender") == "user" else "assistant"
+                h_text = h.get("text", "")
+                if h_text and len(h_text.strip()) > 0:
+                    messages.append({"role": sender_role, "content": h_text})
+
+        user_content_items = []
+        if image_attachments:
+            for img in image_attachments:
+                mime = img.get("mime_type", "image/png")
+                b64 = img.get("base64_data", "")
+                if b64:
+                    user_content_items.append({
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": mime,
+                            "data": b64
+                        }
+                    })
+        user_content_items.append({"type": "text", "text": user_prompt})
+        messages.append({"role": "user", "content": user_content_items})
+
+        system_payload = [
+            {
+                "type": "text",
+                "text": EPIONA_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+
+        payload = {
+            "model": self.anthropic_model,
+            "max_tokens": 3000,
+            "system": system_payload,
+            "messages": messages,
+            "temperature": 0.7 if (not relevant_pages and not doc_attachments) else 0.35,
+            "stream": True
+        }
+
+        endpoint = f"{self.anthropic_base_url}/v1/messages"
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "x-api-key": self.anthropic_api_key,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            method="POST"
+        )
+
+        accumulated_text = ""
+        citation_buffer = ""
+        buffering_citation = False
+
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8").strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                data_part = line[6:].strip()
+                if data_part == "[DONE]":
+                    break
+                try:
+                    evt = json.loads(data_part)
+                    if evt.get("type") == "content_block_delta":
+                        delta = evt.get("delta", {})
+                        if delta.get("type") == "text_delta":
+                            chunk = delta.get("text", "")
+                            accumulated_text += chunk
+                            if "CITATIONS_JSON:" in accumulated_text or buffering_citation:
+                                buffering_citation = True
+                                citation_buffer += chunk
+                            elif "CITATIONS_JSON" in chunk or "CITATIONS" in chunk:
+                                citation_buffer += chunk
+                            else:
+                                if citation_buffer:
+                                    yield {"type": "token", "token": citation_buffer}
+                                    citation_buffer = ""
+                                yield {"type": "token", "token": chunk}
+                except Exception:
+                    pass
+
+        data = self._safe_parse_json(accumulated_text)
+        chat_resp = self._build_chat_response(data, relevant_pages)
+        yield {
+            "type": "end",
+            "answer": chat_resp.answer,
+            "citations": [c.dict() for c in chat_resp.citations],
+            "is_error": False
+        }
+
+    def _stream_openrouter(
+        self,
+        question: str,
+        relevant_pages: List[Dict[str, Any]],
+        user_docs: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        doc_attachments: Optional[List[Dict[str, Any]]] = None,
+        image_attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None
+    ):
+        """Streaming token bertahap langsung dari OpenRouter SSE."""
+        context_parts = []
+        if doc_attachments:
+            for da in doc_attachments:
+                fname = da.get("filename", "Dokumen Lampiran")
+                txt = da.get("extracted_text", "").strip()[:8000]
+                if txt:
+                    context_parts.append(f"--- DOKUMEN LAMPIRAN PENGGUNA ({fname}) ---\n{txt}")
+
+        if relevant_pages:
+            context_str = self._format_context(relevant_pages, user_docs)
+            context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+        elif focused_document_title:
+            context_parts.append(
+                f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
+                f"Pengguna sedang membuka/fokus pada dokumen: '{focused_document_title}'.\n"
+                f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara komprehensif, presisi, dan profesional. "
+                f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
+            )
+
+        if context_parts:
+            full_context = "\n\n".join(context_parts)
+            user_prompt = f"KONTEKS RUJUKAN:\n{full_context}\n\nPERTANYAAN PENGGUNA:\n{question}"
+        else:
+            user_prompt = question
+
+        messages_payload = [{"role": "system", "content": CLAUDIA_STYLE_SYSTEM_PROMPT}]
+        if chat_history:
+            for h in chat_history:
+                sender_role = "user" if h.get("sender") == "user" else "assistant"
+                h_text = h.get("text", "")
+                if h_text and len(h_text.strip()) > 0:
+                    messages_payload.append({"role": sender_role, "content": h_text})
+
+        if image_attachments:
+            user_content = []
+            for img in image_attachments:
+                mime = img.get("mime_type", "image/png")
+                b64 = img.get("base64_data", "")
+                if b64:
+                    user_content.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{b64}"}
+                    })
+            user_content.append({"type": "text", "text": user_prompt})
+            messages_payload.append({"role": "user", "content": user_content})
+        else:
+            messages_payload.append({"role": "user", "content": user_prompt})
+
+        claude_target_model = self.openrouter_model if "claude" in self.openrouter_model.lower() else "anthropic/claude-sonnet-5.5"
+        payload = {
+            "model": claude_target_model,
+            "messages": messages_payload,
+            "temperature": 0.75 if (not relevant_pages and not doc_attachments) else 0.4,
+            "max_tokens": 3500,
+            "stream": True
+        }
+
+        endpoint = f"{self.openrouter_base_url}/chat/completions"
+        req = urllib.request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self.openrouter_api_key}",
+                "HTTP-Referer": "https://epiona.academic.id",
+                "X-Title": "EPIONA Academic Research Assistant"
+            },
+            method="POST"
+        )
+
+        accumulated_text = ""
+        citation_buffer = ""
+        buffering_citation = False
+
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            for raw_line in resp:
+                line = raw_line.decode("utf-8").strip()
+                if not line or not line.startswith("data: "):
+                    continue
+                data_part = line[6:].strip()
+                if data_part == "[DONE]":
+                    break
+                try:
+                    evt = json.loads(data_part)
+                    choices = evt.get("choices", [])
+                    if choices:
+                        chunk = choices[0].get("delta", {}).get("content", "")
+                        if chunk:
+                            accumulated_text += chunk
+                            if "CITATIONS_JSON:" in accumulated_text or buffering_citation:
+                                buffering_citation = True
+                                citation_buffer += chunk
+                            elif "CITATIONS_JSON" in chunk or "CITATIONS" in chunk:
+                                citation_buffer += chunk
+                            else:
+                                if citation_buffer:
+                                    yield {"type": "token", "token": citation_buffer}
+                                    citation_buffer = ""
+                                yield {"type": "token", "token": chunk}
+                except Exception:
+                    pass
+
+        data = self._safe_parse_json(accumulated_text)
+        chat_resp = self._build_chat_response(data, relevant_pages)
+        yield {
+            "type": "end",
+            "answer": chat_resp.answer,
+            "citations": [c.dict() for c in chat_resp.citations],
+            "is_error": False
+        }
+
+    def stream_chat(
+        self,
+        question: str,
+        user_docs: List[Dict[str, Any]],
+        relevant_pages: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None,
+        model_preference: Optional[str] = None
+    ):
+        """Streaming chat berbasis SSE (Claude / OpenRouter stream) dengan fallback non-stream."""
+        pref = (model_preference or "").lower()
+        prefer_claude = "claude" in pref or "sonnet" in pref or "anthropic" in pref
+
+        attachments = attachments or []
+        doc_attachments = [a for a in attachments if not a.get("is_image") and a.get("extracted_text")]
+        image_attachments = [a for a in attachments if a.get("is_image") and a.get("base64_data")]
+
+        from app.indexer import DocumentSearchIndex
+        norm_q = DocumentSearchIndex.normalize_query(question).lower()
+        q_lower = question.strip().lower()
+        words_in_q = set(re.findall(r"\b\w+\b", q_lower))
+        short_greetings = {"halo", "hai", "hello", "hi", "ok", "oke", "sip", "mantap", "makasih", "thanks"}
+        has_short_greeting = bool(short_greetings.intersection(words_in_q))
+        conversational_phrases = [
+            "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
+            "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
+            "siapa yang membuat", "siapa membuat", "siapa pembuat",
+            "siapa pencipta", "siapa penciptamu", "siapa pembuatmu", "siapa developermu", "siapa pengembang",
+            "dibuat oleh siapa", "diciptakan oleh siapa", "siapa yang ciptakan",
+            "siapa yang bikin", "siapa bikin", "siapa yang buat", "siapa buat",
+            "pembuat kamu", "pencipta kamu", "perancang kamu",
+            "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
+            "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
+            "apa itu epiona", "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
+            "apa kabar", "terima kasih", "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
+            "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
+        ]
+        has_phrase = any(phrase in q_lower or phrase in norm_q for phrase in conversational_phrases)
+        is_creator_or_identity = (
+            any(w in norm_q or w in q_lower for w in ["mencipta", "menciptkaan", "ciptakan", "pencipta", "pembuat", "siapa buat", "siapa bikin", "pengembang", "develop"])
+            and any(p in norm_q or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
+        )
+        is_conversational = (is_creator_or_identity or has_short_greeting or has_phrase) and not attachments
+
+        # Rejection deterministik / anti-halusinasi skor rendah
+        if (not user_docs and not is_conversational and not attachments) or (not relevant_pages and not is_conversational and not attachments):
+            fallback_res = self.answer_chat(
+                question=question,
+                user_docs=user_docs,
+                relevant_pages=relevant_pages,
+                chat_history=chat_history,
+                attachments=attachments,
+                focused_document_title=focused_document_title,
+                model_preference=model_preference
+            )
+            words = re.findall(r"\S+\s*|\s+", fallback_res.answer) or [fallback_res.answer]
+            for w in words:
+                yield {"type": "token", "token": w}
+            yield {
+                "type": "end",
+                "answer": fallback_res.answer,
+                "citations": [c.dict() for c in fallback_res.citations],
+                "is_error": getattr(fallback_res, "is_error", False)
+            }
+            return
+
+        # Coba stream Claude langsung jika dipilih
+        if prefer_claude:
+            if self.anthropic_api_key:
+                try:
+                    yield from self._stream_anthropic(
+                        question=question,
+                        relevant_pages=relevant_pages if not is_conversational else [],
+                        user_docs=user_docs,
+                        chat_history=chat_history,
+                        doc_attachments=doc_attachments,
+                        image_attachments=image_attachments,
+                        focused_document_title=focused_document_title
+                    )
+                    return
+                except Exception as e:
+                    logger.warning(f"Streaming Anthropic error: {e}. Mengalihkan ke OpenRouter...")
+
+            if self.openrouter_api_key:
+                try:
+                    yield from self._stream_openrouter(
+                        question=question,
+                        relevant_pages=relevant_pages if not is_conversational else [],
+                        user_docs=user_docs,
+                        chat_history=chat_history,
+                        doc_attachments=doc_attachments,
+                        image_attachments=image_attachments,
+                        focused_document_title=focused_document_title
+                    )
+                    return
+                except Exception as e:
+                    logger.warning(f"Streaming OpenRouter error: {e}.")
+
+        # Fallback non-stream (Gemini, Groq, 9Router, atau Claude non-stream fallback)
+        fallback_res = self.answer_chat(
+            question=question,
+            user_docs=user_docs,
+            relevant_pages=relevant_pages,
+            chat_history=chat_history,
+            attachments=attachments,
+            focused_document_title=focused_document_title,
+            model_preference=model_preference
+        )
+        words = re.findall(r"\S+\s*|\s+", fallback_res.answer) or [fallback_res.answer]
+        for w in words:
+            yield {"type": "token", "token": w}
+        yield {
+            "type": "end",
+            "answer": fallback_res.answer,
+            "citations": [c.dict() for c in fallback_res.citations],
+            "is_error": getattr(fallback_res, "is_error", False)
+        }
 
     def _call_gemini_pool(
         self,
@@ -950,11 +1330,14 @@ class AssistantAiService:
         attempts = len(self.gemini_keys)
         for _ in range(attempts):
             active_key = self.gemini_keys[self._current_key_idx]
-            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent?key={active_key}"
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent"
             req = urllib.request.Request(
                 url,
                 data=req_data,
-                headers={"Content-Type": "application/json"},
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": active_key
+                },
                 method="POST"
             )
 
@@ -1631,7 +2014,7 @@ class AssistantAiService:
                     logger.warning(f"Preferred Anthropic Academic error: {e}.")
 
             if self.openrouter_api_key:
-                claude_target = self.openrouter_model if "claude" in self.openrouter_model.lower() else "anthropic/claude-3.5-sonnet"
+                claude_target = self.openrouter_model if "claude" in self.openrouter_model.lower() else "anthropic/claude-sonnet-5.5"
                 try:
                     payload = {
                         "model": claude_target,
@@ -1849,8 +2232,13 @@ class AssistantAiService:
                     "contents": [{"parts": [{"text": "Ping test. Balas: PONG"}]}],
                     "generationConfig": {"maxOutputTokens": 10}
                 }
-                url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent?key={api_key.strip()}"
-                req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers={"Content-Type": "application/json"}, method="POST")
+                url = f"https://generativelanguage.googleapis.com/v1beta/models/{m_name}:generateContent"
+                req = urllib.request.Request(
+                    url,
+                    data=json.dumps(payload).encode("utf-8"),
+                    headers={"Content-Type": "application/json", "x-goog-api-key": api_key.strip()},
+                    method="POST"
+                )
                 with urllib.request.urlopen(req, timeout=12) as resp:
                     resp_data = json.loads(resp.read().decode("utf-8"))
                 latency = int((time.time() - start_time) * 1000)
@@ -1872,7 +2260,7 @@ class AssistantAiService:
 
             elif provider == "anthropic":
                 b_url = (base_url or self.anthropic_base_url or "https://api.anthropic.com").rstrip("/")
-                m_name = model or self.anthropic_model or "claude-3-5-haiku-20241022"
+                m_name = model or self.anthropic_model or "claude-haiku-5-5"
                 payload = {
                     "model": m_name,
                     "max_tokens": 10,
@@ -2043,7 +2431,7 @@ class AssistantAiService:
         if self.gemini_keys:
             try:
                 for k in self.gemini_keys:
-                    g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent?key={k}"
+                    g_url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:generateContent"
                     g_payload = {
                         "contents": [{"parts": [{"text": prompt}]}],
                         "generationConfig": {"temperature": 0.2, "maxOutputTokens": 25}
@@ -2051,7 +2439,7 @@ class AssistantAiService:
                     g_req = urllib.request.Request(
                         g_url,
                         data=json.dumps(g_payload).encode("utf-8"),
-                        headers={"Content-Type": "application/json"},
+                        headers={"Content-Type": "application/json", "x-goog-api-key": k},
                         method="POST"
                     )
                     with urllib.request.urlopen(g_req, timeout=1.5) as resp:

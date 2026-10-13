@@ -324,9 +324,9 @@ class TestP1Features(unittest.TestCase):
                 user_docs=[{"id": "d1", "title": "Buku"}]
             )
 
-            # Verifikasi request yang dikirim
+            # Verifikasi request yang dikirim: header beta usang dihapus, cache_control dipertahankan
             req_called = mock_url.call_args[0][0]
-            self.assertEqual(req_called.headers.get("Anthropic-beta"), "prompt-caching-2024-07-25")
+            self.assertIsNone(req_called.headers.get("Anthropic-beta"))
             sent_data = json.loads(req_called.data.decode("utf-8"))
             self.assertIsInstance(sent_data["system"], list)
             self.assertEqual(sent_data["system"][0]["cache_control"]["type"], "ephemeral")

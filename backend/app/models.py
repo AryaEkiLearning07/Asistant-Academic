@@ -81,6 +81,7 @@ class ChatRequest(BaseModel):
     focused_document_id: Optional[str] = None
     session_id: Optional[str] = None
     attachments: Optional[List[ChatAttachment]] = Field(default_factory=list, description="Daftar file atau gambar yang dilampirkan pengguna")
+    stream: Optional[bool] = Field(default=False, description="Flag streaming response Server-Sent Events (SSE)")
 
 class CreateSessionRequest(BaseModel):
     title: Optional[str] = "Percakapan Baru"

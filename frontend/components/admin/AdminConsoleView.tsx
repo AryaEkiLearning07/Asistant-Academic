@@ -110,7 +110,7 @@ export function AdminConsoleView({
             setProviderModel(data.openrouter_model || "google/gemma-4-31b-it:free");
           } else if (data.anthropic_active) {
             setSelectedProvider("anthropic");
-            setProviderModel(data.anthropic_model || "claude-3-5-haiku-20241022");
+            setProviderModel(data.anthropic_model || "claude-haiku-5-5");
           } else if (data.gemini_active) {
             setSelectedProvider("gemini");
             setProviderModel(data.gemini_model || "gemini-2.0-flash");
@@ -1092,7 +1092,7 @@ export function AdminConsoleView({
                   onClick={() => {
                     setSelectedProvider("anthropic");
                     if (aiSettings?.anthropic_model) setProviderModel(aiSettings.anthropic_model);
-                    else setProviderModel("claude-3-5-haiku-20241022");
+                    else setProviderModel("claude-haiku-5-5");
                     setTestResult(null);
                   }}
                   className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-bold border transition cursor-pointer shrink-0 ${
@@ -1166,25 +1166,25 @@ export function AdminConsoleView({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setProviderModel("anthropic/claude-3.5-haiku")}
+                      onClick={() => setProviderModel("anthropic/claude-haiku-5.5")}
                       className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
-                        providerModel === "anthropic/claude-3.5-haiku"
+                        providerModel === "anthropic/claude-haiku-5.5"
                           ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-300 font-bold"
                           : "border-slate-700 hover:border-cyan-500/40 text-slate-300"
                       }`}
                     >
-                      Claude 3.5 Haiku (Hemat)
+                      Claude Haiku 5.5 (Hemat)
                     </button>
                     <button
                       type="button"
-                      onClick={() => setProviderModel("anthropic/claude-3.5-sonnet")}
+                      onClick={() => setProviderModel("anthropic/claude-sonnet-5.5")}
                       className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
-                        providerModel === "anthropic/claude-3.5-sonnet"
+                        providerModel === "anthropic/claude-sonnet-5.5"
                           ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-300 font-bold"
                           : "border-slate-700 hover:border-cyan-500/40 text-slate-300"
                       }`}
                     >
-                      Claude 3.5 Sonnet (Flagship)
+                      Claude Sonnet 5.5 (Flagship)
                     </button>
                   </>
                 )}
@@ -1247,25 +1247,25 @@ export function AdminConsoleView({
                   <>
                     <button
                       type="button"
-                      onClick={() => setProviderModel("claude-3-5-haiku-20241022")}
+                      onClick={() => setProviderModel("claude-haiku-5-5")}
                       className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
-                        providerModel === "claude-3-5-haiku-20241022"
+                        providerModel === "claude-haiku-5-5"
                           ? "bg-purple-500/20 border-purple-500/40 text-purple-300 font-bold"
                           : "border-slate-700 hover:border-purple-500/40 text-slate-300"
                       }`}
                     >
-                      Claude 3.5 Haiku
+                      Claude Haiku 5.5
                     </button>
                     <button
                       type="button"
-                      onClick={() => setProviderModel("claude-3-5-sonnet-20241022")}
+                      onClick={() => setProviderModel("claude-sonnet-5-5")}
                       className={`text-[11px] px-2.5 py-1 rounded-lg border transition cursor-pointer ${
-                        providerModel === "claude-3-5-sonnet-20241022"
+                        providerModel === "claude-sonnet-5-5"
                           ? "bg-purple-500/20 border-purple-500/40 text-purple-300 font-bold"
                           : "border-slate-700 hover:border-purple-500/40 text-slate-300"
                       }`}
                     >
-                      Claude 3.5 Sonnet
+                      Claude Sonnet 5.5
                     </button>
                   </>
                 )}

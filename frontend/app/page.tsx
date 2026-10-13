@@ -299,6 +299,11 @@ export default function AppRoot() {
       const res = await fetch(`${API_BASE}/api/v1/documents`, {
         headers: { "X-User-Id": currentUser.token },
       });
+      if (res.status === 401) {
+        setCurrentUser(null);
+        localStorage.removeItem("epiona_user");
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setDocuments(data.documents);
@@ -315,6 +320,11 @@ export default function AppRoot() {
       const res = await fetch(`${API_BASE}/api/v1/chats`, {
         headers: { "X-User-Id": currentUser.token },
       });
+      if (res.status === 401) {
+        setCurrentUser(null);
+        localStorage.removeItem("epiona_user");
+        return;
+      }
       if (res.ok) {
         const data = await res.json();
         setChatSessions(data.sessions || []);
@@ -515,7 +525,21 @@ export default function AppRoot() {
             headers: { "X-User-Id": currentUser.token },
             body: formData,
           });
-          if (!res.ok) throw new Error("Gagal mengunggah");
+          if (!res.ok) {
+            if (res.status === 401) {
+              setCurrentUser(null);
+              localStorage.removeItem("epiona_user");
+              throw new Error("Sesi login Anda telah berakhir (401). Silakan masuk kembali.");
+            }
+            if (res.status === 413) {
+              throw new Error(`Ukuran file "${file.name}" melebihi batas maksimum 25 MB (Payload Too Large 413).`);
+            }
+            if (res.status === 429) {
+              throw new Error("Batas kuota upload tercapai (Rate Limit 429). Silakan tunggu sebentar.");
+            }
+            const errData = await res.json().catch(() => ({}));
+            throw new Error(errData.detail || "Gagal mengunggah file");
+          }
           const receipt = await res.json();
           successCount++;
           lastReceiptId = receipt.id;
@@ -663,6 +687,242 @@ export default function AppRoot() {
     }, 18);
   }
 
+  // Perform Chat Streaming Request with SSE and Error UX Fallback
+  async function performChatStreamingRequest(
+    payload: {
+      question: string;
+      grounding_mode: string;
+      model_preference: string;
+      focused_document_id: string | null;
+      session_id: string | null;
+      attachments: Array<{
+        filename: string;
+        file_type: string;
+        file_size: number;
+        data_base64: string | null;
+      }>;
+    },
+    stopStatus: () => void,
+    targetAssistantId?: string,
+    onComplete?: () => void
+  ) {
+    if (!currentUser) return;
+    const msgId = targetAssistantId || (Date.now() + 1).toString();
+    const initialMsg: Message = {
+      id: msgId,
+      sender: "assistant",
+      text: "",
+      citations: [],
+      figures: [],
+      timestamp: getNow24Hour(),
+    };
+
+    if (targetAssistantId) {
+      setMessages((prev) => prev.map((m) => (m.id === targetAssistantId ? initialMsg : m)));
+    } else {
+      setMessages((prev) => [...prev, initialMsg]);
+    }
+    setIsSending(false);
+    setIsTypingStream(true);
+    setStreamingMsgId(msgId);
+
+    const abortController = new AbortController();
+    const timeoutId = setTimeout(() => {
+      abortController.abort();
+    }, 90000);
+
+    try {
+      let isSseSuccess = false;
+      let res: Response | null = null;
+      try {
+        res = await fetch(`${API_BASE}/api/v1/chat/stream`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Id": currentUser.token,
+          },
+          body: JSON.stringify(payload),
+          signal: abortController.signal,
+        });
+      } catch (netErr: any) {
+        if (netErr.name === "AbortError") throw netErr;
+        res = null;
+      }
+
+      if (res && !res.ok) {
+        clearTimeout(timeoutId);
+        stopStatus();
+        if (res.status === 401) {
+          setCurrentUser(null);
+          localStorage.removeItem("epiona_session_user");
+          showAlert("Sesi Berakhir", "Sesi login Anda telah berakhir (401 Unauthorized). Silakan masuk kembali.", "warning");
+          throw new Error("Sesi login Anda telah berakhir (401). Silakan masuk kembali.");
+        }
+        if (res.status === 413) {
+          throw new Error("Ukuran muatan permintaan terlalu besar (413 Payload Too Large). Kurangi lampiran atau teks pertanyaan.");
+        }
+        if (res.status === 429) {
+          throw new Error("Terlalu banyak permintaan (429 Rate Limit). Mohon tunggu 1 menit sebelum mengajukan pertanyaan lagi.");
+        }
+        if (res.status === 403) {
+          setIsSubscriptionModalOpen(true);
+          const errData = await res.json().catch(() => ({}));
+          throw new Error(errData.detail || "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.");
+        }
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.detail || errData.message || `Gagal mendapatkan respon asisten (HTTP ${res.status}).`);
+      }
+
+      if (res && res.ok && res.headers.get("content-type")?.includes("text/event-stream") && res.body) {
+        stopStatus();
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let buffer = "";
+        let accumulatedText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmedLine = line.trim();
+            if (!trimmedLine.startsWith("data:")) continue;
+            const dataStr = trimmedLine.slice(5).trim();
+            if (!dataStr) continue;
+
+            try {
+              const eventData = JSON.parse(dataStr);
+              if (eventData.type === "token") {
+                accumulatedText += eventData.token || "";
+                setMessages((prev) =>
+                  prev.map((m) => (m.id === msgId ? { ...m, text: accumulatedText } : m))
+                );
+                chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+              } else if (eventData.type === "end") {
+                const finalAnswer = eventData.answer || accumulatedText;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === msgId
+                      ? {
+                          ...m,
+                          text: finalAnswer,
+                          citations: eventData.citations || [],
+                          figures: eventData.figures || [],
+                        }
+                      : m
+                  )
+                );
+                if (typeof eventData.claude_quota_left === "number") {
+                  setCurrentUser((prev) =>
+                    prev ? { ...prev, claude_quota_left: eventData.claude_quota_left } : null
+                  );
+                }
+                if (eventData.session_title && payload.session_id) {
+                  setChatSessions((prev) =>
+                    prev.map((s) => (s.id === payload.session_id ? { ...s, title: eventData.session_title } : s))
+                  );
+                }
+                isSseSuccess = true;
+              } else if (eventData.type === "error") {
+                throw new Error(eventData.detail || "Terjadi kesalahan pada respon streaming asisten.");
+              }
+            } catch (pErr: any) {
+              if (pErr.message?.includes("Terjadi kesalahan") || pErr.message?.includes("streaming")) {
+                throw pErr;
+              }
+            }
+          }
+        }
+        clearTimeout(timeoutId);
+      }
+
+      // Fallback ke non-stream /api/v1/chat jika SSE tidak dieksekusi
+      if (!isSseSuccess) {
+        const fallbackRes = await fetch(`${API_BASE}/api/v1/chat`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-User-Id": currentUser.token,
+          },
+          body: JSON.stringify(payload),
+          signal: abortController.signal,
+        });
+
+        clearTimeout(timeoutId);
+        stopStatus();
+
+        if (!fallbackRes.ok) {
+          if (fallbackRes.status === 401) {
+            setCurrentUser(null);
+            localStorage.removeItem("epiona_session_user");
+            showAlert("Sesi Berakhir", "Sesi login Anda telah berakhir (401 Unauthorized). Silakan masuk kembali.", "warning");
+            throw new Error("Sesi login Anda telah berakhir (401). Silakan masuk kembali.");
+          }
+          if (fallbackRes.status === 413) {
+            throw new Error("Ukuran muatan permintaan terlalu besar (413 Payload Too Large). Kurangi lampiran atau teks pertanyaan.");
+          }
+          if (fallbackRes.status === 429) {
+            throw new Error("Terlalu banyak permintaan (429 Rate Limit). Mohon tunggu 1 menit sebelum mengajukan pertanyaan lagi.");
+          }
+          if (fallbackRes.status === 403) {
+            setIsSubscriptionModalOpen(true);
+            const errData = await fallbackRes.json().catch(() => ({}));
+            throw new Error(errData.detail || "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.");
+          }
+          const errData = await fallbackRes.json().catch(() => ({}));
+          throw new Error(errData.detail || errData.message || `Gagal mendapatkan respon asisten (HTTP ${fallbackRes.status}).`);
+        }
+
+        const data = await fallbackRes.json();
+        if (typeof data.claude_quota_left === "number") {
+          setCurrentUser((prev) => (prev ? { ...prev, claude_quota_left: data.claude_quota_left } : null));
+        }
+        if (data.session_title && payload.session_id) {
+          setChatSessions((prev) =>
+            prev.map((s) => (s.id === payload.session_id ? { ...s, title: data.session_title } : s))
+          );
+        }
+
+        streamAssistantReply(
+          data.answer,
+          data.citations || [],
+          data.figures || [],
+          onComplete,
+          msgId
+        );
+        return;
+      }
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      stopStatus();
+      let displayError = err.message || "Maaf, terjadi kendala saat menghubungkan ke asisten.";
+      if (err.name === "AbortError") {
+        displayError = "Permintaan melebihi batas waktu 90 detik (Request Timeout). Silakan periksa koneksi internet Anda atau coba beberapa saat lagi.";
+      }
+      setMessages((prev) =>
+        prev.map((m) =>
+          m.id === msgId
+            ? {
+                ...m,
+                text: displayError,
+                timestamp: getNow24Hour(),
+              }
+            : m
+        )
+      );
+    } finally {
+      clearTimeout(timeoutId);
+      stopStatus();
+      setIsSending(false);
+      setIsTypingStream(false);
+      setStreamingMsgId(null);
+      if (onComplete) onComplete();
+    }
+  }
+
   // Send Message Handler
   async function handleSendMessage(e?: React.FormEvent) {
     if (e) e.preventDefault();
@@ -706,75 +966,32 @@ export default function AppRoot() {
       } catch (err) {}
     }
 
-    try {
-      const fallbackPrompt = currentAttachments.some((f) =>
-        f.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp"].some((ext) => f.name.toLowerCase().endsWith(ext))
-      )
-        ? "Tolong jelaskan dan analisa gambar yang dilampirkan ini."
-        : "Tolong rangkum dan jelaskan dokumen yang dilampirkan ini.";
+    const fallbackPrompt = currentAttachments.some((f) =>
+      f.type.startsWith("image/") || ["png", "jpg", "jpeg", "webp"].some((ext) => f.name.toLowerCase().endsWith(ext))
+    )
+      ? "Tolong jelaskan dan analisa gambar yang dilampirkan ini."
+      : "Tolong rangkum dan jelaskan dokumen yang dilampirkan ini.";
 
-      const res = await fetch(`${API_BASE}/api/v1/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-User-Id": currentUser.token },
-        body: JSON.stringify({
-          question: q || fallbackPrompt,
-          grounding_mode: groundingMode,
-          model_preference: modelPreference,
-          focused_document_id: activeDoc ? activeDoc.id : null,
-          session_id: activeSession,
-          attachments: currentAttachments.map((f) => ({
-            filename: f.name,
-            file_type: f.type,
-            file_size: f.size,
-            data_base64: f.base64 || (f.dataUrl && f.dataUrl.includes(";base64,") ? f.dataUrl.split(";base64,")[1] : null),
-          })),
-        }),
-      });
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        let errMsg = "Gagal mendapatkan respon asisten";
-        if (typeof errData.detail === "string") {
-          errMsg = errData.detail;
-        } else if (typeof errData.message === "string") {
-          errMsg = errData.message;
-        }
-        if (res.status === 403) {
-          setIsSubscriptionModalOpen(true);
-          if (!errData.detail) {
-            errMsg = "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.";
-          }
-        }
-        throw new Error(errMsg);
-      }
-      const data = await res.json();
-      stopStatus();
-
-      // Sinkronkan kuota Claude secara real-time
-      if (typeof data.claude_quota_left === "number") {
-        setCurrentUser((prev) => prev ? ({ ...prev, claude_quota_left: data.claude_quota_left }) : null);
-      }
-
-      if (data.session_title && activeSession) {
-        setChatSessions((prev) => prev.map((s) => (s.id === activeSession ? { ...s, title: data.session_title } : s)));
-      }
-      streamAssistantReply(data.answer, data.citations || [], data.figures || [], () => {
+    await performChatStreamingRequest(
+      {
+        question: q || fallbackPrompt,
+        grounding_mode: groundingMode,
+        model_preference: modelPreference,
+        focused_document_id: activeDoc ? activeDoc.id : null,
+        session_id: activeSession,
+        attachments: currentAttachments.map((f) => ({
+          filename: f.name,
+          file_type: f.type,
+          file_size: f.size,
+          data_base64: f.base64 || (f.dataUrl && f.dataUrl.includes(";base64,") ? f.dataUrl.split(";base64,")[1] : null),
+        })),
+      },
+      stopStatus,
+      undefined,
+      () => {
         fetchChatSessions();
-      });
-    } catch (err: any) {
-      stopStatus();
-      setMessages((prev) => [
-        ...prev,
-        {
-          id: (Date.now() + 1).toString(),
-          sender: "assistant",
-          text: err.message || "Maaf, terjadi kendala saat menghubungkan ke asisten.",
-          timestamp: getNow24Hour(),
-        },
-      ]);
-    } finally {
-      setIsSending(false);
-    }
+      }
+    );
   }
 
   // Copy Message Handler
@@ -820,76 +1037,23 @@ export default function AppRoot() {
       }
     }
 
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-User-Id": currentUser.token },
-        body: JSON.stringify({
-          question: userMsg.text,
-          grounding_mode: groundingMode,
-          model_preference: modelPreference,
-          focused_document_id: activeDoc ? activeDoc.id : null,
-          session_id: currentSessionId,
-          attachments: (userMsg.attachments || []).map((f) => ({
-            filename: f.name,
-            file_type: f.type,
-            file_size: f.size,
-            data_base64: f.dataUrl && f.dataUrl.includes(";base64,") ? f.dataUrl.split(";base64,")[1] : null,
-          })),
-        }),
-      });
-      if (!res.ok) {
-        if (res.status === 403) {
-          const errData = await res.json().catch(() => ({}));
-          const errMsg = typeof errData.detail === "string" ? errData.detail : "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.";
-          setIsSubscriptionModalOpen(true);
-          throw new Error(errMsg);
-        }
-        throw new Error("Gagal mengulangi respon");
-      }
-      const data = await res.json();
-      stopStatus();
-
-      // Sinkronkan kuota Claude secara real-time
-      if (typeof data.claude_quota_left === "number") {
-        setCurrentUser((prev) => prev ? ({ ...prev, claude_quota_left: data.claude_quota_left }) : null);
-      }
-
-      streamAssistantReply(
-        data.answer,
-        data.citations || [],
-        data.figures || [],
-        undefined,
-        targetAssistantId || undefined
-      );
-    } catch (err: any) {
-      stopStatus();
-      if (targetAssistantId) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === targetAssistantId
-              ? {
-                  ...m,
-                  text: err.message || "Maaf, terjadi kendala saat menghubungkan ke asisten.",
-                  timestamp: getNow24Hour(),
-                }
-              : m
-          )
-        );
-      } else {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: (Date.now() + 1).toString(),
-            sender: "assistant",
-            text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
-            timestamp: getNow24Hour(),
-          },
-        ]);
-      }
-    } finally {
-      setIsSending(false);
-    }
+    await performChatStreamingRequest(
+      {
+        question: userMsg.text,
+        grounding_mode: groundingMode,
+        model_preference: modelPreference,
+        focused_document_id: activeDoc ? activeDoc.id : null,
+        session_id: currentSessionId,
+        attachments: (userMsg.attachments || []).map((f) => ({
+          filename: f.name,
+          file_type: f.type,
+          file_size: f.size,
+          data_base64: f.dataUrl && f.dataUrl.includes(";base64,") ? f.dataUrl.split(";base64,")[1] : null,
+        })),
+      },
+      stopStatus,
+      targetAssistantId || undefined
+    );
   }
 
   // Edit Message Handler (Me-replace respon lama dari hasil suntingan)
@@ -922,71 +1086,19 @@ export default function AppRoot() {
     }
 
     const stopStatus = startProgressiveStatus(groundingMode === "academic", false);
-    try {
-      const res = await fetch(`${API_BASE}/api/v1/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "X-User-Id": currentUser.token },
-        body: JSON.stringify({
-          question: trimmed,
-          grounding_mode: groundingMode,
-          model_preference: modelPreference,
-          focused_document_id: activeDoc ? activeDoc.id : null,
-          session_id: currentSessionId,
-          attachments: [],
-        }),
-      });
-      if (!res.ok) {
-        if (res.status === 403) {
-          const errData = await res.json().catch(() => ({}));
-          const errMsg = typeof errData.detail === "string" ? errData.detail : "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.";
-          setIsSubscriptionModalOpen(true);
-          throw new Error(errMsg);
-        }
-        throw new Error("Gagal mengirim hasil edit");
-      }
-      const data = await res.json();
-      stopStatus();
 
-      // Sinkronkan kuota Claude secara real-time
-      if (typeof data.claude_quota_left === "number") {
-        setCurrentUser((prev) => prev ? ({ ...prev, claude_quota_left: data.claude_quota_left }) : null);
-      }
-
-      streamAssistantReply(
-        data.answer,
-        data.citations || [],
-        data.figures || [],
-        undefined,
-        targetAssistantId || undefined
-      );
-    } catch (err: any) {
-      stopStatus();
-      if (targetAssistantId) {
-        setMessages((prev) =>
-          prev.map((m) =>
-            m.id === targetAssistantId
-              ? {
-                  ...m,
-                  text: err.message || "Maaf, terjadi kendala saat menghubungkan ke asisten.",
-                  timestamp: getNow24Hour(),
-                }
-              : m
-          )
-        );
-      } else {
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: (Date.now() + 1).toString(),
-            sender: "assistant",
-            text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
-            timestamp: getNow24Hour(),
-          },
-        ]);
-      }
-    } finally {
-      setIsSending(false);
-    }
+    await performChatStreamingRequest(
+      {
+        question: trimmed,
+        grounding_mode: groundingMode,
+        model_preference: modelPreference,
+        focused_document_id: activeDoc ? activeDoc.id : null,
+        session_id: currentSessionId,
+        attachments: [],
+      },
+      stopStatus,
+      targetAssistantId || undefined
+    );
   }
 
   // Voice Input Toggle

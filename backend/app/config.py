@@ -53,7 +53,11 @@ MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", "25"))
 WEB_MODE_RATE_LIMIT_PER_MINUTE = int(os.getenv("WEB_MODE_RATE_LIMIT_PER_MINUTE", "10"))
 MAX_WEB_QUOTA_PER_DAY = int(os.getenv("MAX_WEB_QUOTA_PER_DAY", "50"))
 
+# CORS Configuration
+CORS_ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000")
 
+# OCR Configuration (Ekstraksi Halaman PDF Tanpa Teks)
+OCR_ENABLED = os.getenv("OCR_ENABLED", "false").lower() in ("true", "1", "yes")
 
 # 9Router & OpenRouter AI Gateway Configuration (OpenAI-compatible)
 ROUTER_BASE_URL = os.getenv("ROUTER_BASE_URL", "http://localhost:20128/v1")
@@ -65,14 +69,18 @@ raw_openrouter_key = os.getenv("OPENROUTER_API_KEY", "").strip()
 # Kunci OpenRouter resmi diawali sk-or-
 OPENROUTER_API_KEY = raw_openrouter_key if raw_openrouter_key.startswith("sk-or-") else ""
 OPENROUTER_BASE_URL = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
-OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-3.5-sonnet")
+OPENROUTER_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-sonnet-5.5")
+OPENROUTER_DEFAULT_MODEL = os.getenv("OPENROUTER_DEFAULT_MODEL", OPENROUTER_MODEL)
+OPENROUTER_FAST_MODEL = os.getenv("OPENROUTER_FAST_MODEL", "anthropic/claude-haiku-5.5")
 
 # Anthropic Direct API / Proxy
 raw_anthropic_key = os.getenv("ANTHROPIC_API_KEY", "").strip()
 # Kunci Anthropic resmi diawali sk-ant- (hindari key asing seperti ink-live-...)
 ANTHROPIC_API_KEY = raw_anthropic_key if raw_anthropic_key.startswith("sk-ant-") else ""
 ANTHROPIC_BASE_URL = os.getenv("ANTHROPIC_BASE_URL", "https://api.anthropic.com")
-ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20241022")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-sonnet-5-5")
+ANTHROPIC_DEFAULT_MODEL = os.getenv("ANTHROPIC_DEFAULT_MODEL", ANTHROPIC_MODEL)
+ANTHROPIC_FAST_MODEL = os.getenv("ANTHROPIC_FAST_MODEL", "claude-haiku-5-5")
 
 # AI Configuration (Direct Google Gemini Multi-Key & Groq Fallback)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")

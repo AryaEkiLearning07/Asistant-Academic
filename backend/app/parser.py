@@ -3,10 +3,10 @@ import uuid
 import hashlib
 from pathlib import Path
 from typing import Dict, Any, List, Union
-from app.config import FIGURES_DIR, THUMBNAILS_DIR, PAGES_DIR, JWT_SECRET
+from app.config import FIGURES_DIR, THUMBNAILS_DIR, PAGES_DIR, JWT_SECRET, OCR_ENABLED
 
 class PdfDocumentParser:
-    """Parser dokumen PDF berbasis PyMuPDF yang mempertahankan nomor halaman, memotong gambar grafik, dan membuat thumbnail sampul halaman 1."""
+    """Parser dokumen PDF berbasis PyMuPDF yang mempertahankan nomor halaman, memotong gambar grafik, membuat thumbnail, mengekstrak tabel terstruktur, dan OCR opsional."""
 
     @staticmethod
     def _file_token(doc_id: str) -> str:
@@ -14,12 +14,67 @@ class PdfDocumentParser:
         return hashlib.sha256(f"{doc_id}:{JWT_SECRET}".encode("utf-8")).hexdigest()[:12]
 
     @staticmethod
+    def _extract_page_tables_structured(plumber_page, page_num: int) -> str:
+        """Ekstraksi tabel menggunakan pdfplumber menjadi format teks markdown terstruktur."""
+        try:
+            tables = plumber_page.extract_tables()
+            if not tables:
+                return ""
+            table_md_blocks = []
+            for tbl_idx, tbl in enumerate(tables):
+                clean_rows = []
+                for row in tbl:
+                    if not row or not any(row):
+                        continue
+                    clean_rows.append([str(cell or "").strip().replace("\n", " ") for cell in row])
+                if clean_rows:
+                    headers = clean_rows[0]
+                    headers = [h if h else f"Col{i+1}" for i, h in enumerate(headers)]
+                    header_line = "| " + " | ".join(headers) + " |"
+                    separator_line = "| " + " | ".join(["---"] * len(headers)) + " |"
+                    row_lines = ["| " + " | ".join(r) + " |" for r in clean_rows[1:]]
+                    tbl_text = "\n".join([header_line, separator_line] + row_lines)
+                    table_md_blocks.append(f"[Tabel {tbl_idx + 1} Halaman {page_num}]\n{tbl_text}")
+            return "\n\n".join(table_md_blocks)
+        except Exception:
+            return ""
+
+    @staticmethod
+    def _ocr_page_if_needed(page, page_num: int) -> str:
+        """OCR opsional menggunakan pytesseract jika halaman tidak memuat teks dan OCR_ENABLED aktif."""
+        if not OCR_ENABLED:
+            return ""
+        try:
+            import pytesseract
+            from PIL import Image
+            import io
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_bytes))
+            ocr_text = pytesseract.image_to_string(img).strip()
+            return ocr_text
+        except Exception:
+            return ""
+
+    @staticmethod
     def parse_pdf(file_input: Union[bytes, Path, str], doc_id: str = "") -> Dict[str, Any]:
-        """Ekstraksi teks per halaman dengan retensi nomor halaman fisik 1:1, thumbnail sampul, dan pemotongan gambar grafik."""
+        """Ekstraksi teks per halaman dengan retensi nomor halaman fisik 1:1, thumbnail sampul, pemotongan gambar, ekstraksi tabel terstruktur, dan OCR opsional."""
         if isinstance(file_input, bytes):
             doc = fitz.open(stream=file_input, filetype="pdf")
         else:
             doc = fitz.open(str(file_input))
+
+        # Inisialisasi pdfplumber opsional untuk ekstraksi tabel terstruktur
+        plumber_doc = None
+        try:
+            import pdfplumber
+            if isinstance(file_input, bytes):
+                import io
+                plumber_doc = pdfplumber.open(io.BytesIO(file_input))
+            else:
+                plumber_doc = pdfplumber.open(str(file_input))
+        except Exception:
+            plumber_doc = None
 
         total_pages = len(doc)
         pages = []
@@ -56,6 +111,21 @@ class PdfDocumentParser:
             page = doc[page_idx]
             page_num = page_idx + 1  # 1-indexed untuk sitasi akademik manusiawi
             text = page.get_text("text").strip()
+
+            # Item E: Ekstraksi tabel pdfplumber ke teks terstruktur
+            if plumber_doc and page_idx < len(plumber_doc.pages):
+                tbl_structured = PdfDocumentParser._extract_page_tables_structured(
+                    plumber_doc.pages[page_idx],
+                    page_num
+                )
+                if tbl_structured:
+                    text = f"{text}\n\n{tbl_structured}".strip() if text else tbl_structured
+
+            # Item E: OCR opsional pytesseract jika halaman tanpa teks dan OCR_ENABLED aktif
+            if not text:
+                ocr_result = PdfDocumentParser._ocr_page_if_needed(page, page_num)
+                if ocr_result:
+                    text = ocr_result
             
             pages.append({
                 "page_number": page_num,
@@ -144,6 +214,12 @@ class PdfDocumentParser:
                     })
                 except Exception:
                     continue
+
+        if plumber_doc:
+            try:
+                plumber_doc.close()
+            except Exception:
+                pass
 
         doc.close()
         return {

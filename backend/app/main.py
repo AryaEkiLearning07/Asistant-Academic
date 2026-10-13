@@ -1,3 +1,5 @@
+import os
+import json
 import time
 import uuid
 import re
@@ -8,7 +10,7 @@ import jwt
 from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, Form, Header, Query, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 
 from app.config import (
     PDFS_DIR,
@@ -21,7 +23,8 @@ from app.config import (
     ADMIN_EMAIL,
     MAX_UPLOAD_MB,
     WEB_MODE_RATE_LIMIT_PER_MINUTE,
-    MAX_WEB_QUOTA_PER_DAY
+    MAX_WEB_QUOTA_PER_DAY,
+    CORS_ORIGINS
 )
 from app.models import (
     RegisterRequest,
@@ -55,10 +58,17 @@ app = FastAPI(
     description="Backend API untuk Library Farmasi, Multi-Tenant User Isolation, & Deep-Link PDF Citations"
 )
 
-# Izinkan CORS untuk Next.js frontend (port 3000 s/d 3005)
+# Whitelist CORS dari env CORS_ORIGINS (default: http://localhost:3000)
+# PENTING: Dilarang menggunakan wildcard '*' bersama allow_credentials=True (pelanggaran spesifikasi CORS W3C)
+raw_cors = os.getenv("CORS_ORIGINS", CORS_ORIGINS)
+cors_origins_list = [o.strip() for o in raw_cors.split(",") if o.strip()]
+cors_origins_list = [o for o in cors_origins_list if o != "*"]
+if not cors_origins_list:
+    cors_origins_list = ["http://localhost:3000"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=cors_origins_list,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,34 +93,13 @@ def create_access_token(user: dict, expires_delta: Optional[timedelta] = None) -
 def decode_access_token(token_str: str) -> dict:
     return jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM])
 
-# --- RATE LIMITER & KUOTA WEB MODE PER USER ---
-_user_web_mode_timestamps: Dict[str, List[float]] = {}
-_user_web_mode_daily: Dict[str, Dict[str, int]] = {}
-
+# --- RATE LIMITER & KUOTA WEB MODE PER USER (PERSISTEN DATABASE) ---
 def check_web_mode_rate_limit(user_id: str) -> None:
-    now = time.time()
-    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    daily_record = _user_web_mode_daily.setdefault(user_id, {"date": today_str, "count": 0})
-    if daily_record.get("date") != today_str:
-        daily_record["date"] = today_str
-        daily_record["count"] = 0
-
-    if daily_record["count"] >= MAX_WEB_QUOTA_PER_DAY:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Batas kuota harian mode web ({MAX_WEB_QUOTA_PER_DAY} kueri/hari) telah habis. Silakan coba lagi besok."
-        )
-
-    user_times = _user_web_mode_timestamps.setdefault(user_id, [])
-    active_times = [t for t in user_times if now - t < 60]
-    _user_web_mode_timestamps[user_id] = active_times
-    if len(active_times) >= WEB_MODE_RATE_LIMIT_PER_MINUTE:
-        raise HTTPException(
-            status_code=429,
-            detail=f"Batas penggunaan mode web terlampaui (maksimal {WEB_MODE_RATE_LIMIT_PER_MINUTE} kali per menit). Silakan tunggu beberapa saat."
-        )
-    _user_web_mode_timestamps[user_id].append(now)
-    daily_record["count"] += 1
+    storage_mgr.check_and_record_web_rate_limit(
+        user_id=user_id,
+        max_per_minute=WEB_MODE_RATE_LIMIT_PER_MINUTE,
+        max_per_day=MAX_WEB_QUOTA_PER_DAY
+    )
 
 # --- AUTH DEPENDENCY ---
 def get_current_user(
@@ -617,13 +606,263 @@ def update_title_in_background(session_id: str, question: str, answer: str):
     except Exception as e:
         print(f"[BG TITLE ERROR] {e}")
 
-@app.post("/api/v1/chat", response_model=ChatResponse)
+@app.post("/api/v1/chat/stream")
+def ask_assistant_stream(
+    request: ChatRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    """Endpoint chat streaming SSE (Server-Sent Events) dengan fallback non-stream."""
+    # 0a. Validasi batas panjang pertanyaan
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="Pertanyaan tidak boleh kosong.")
+    if len(request.question) > 8000:
+        raise HTTPException(status_code=400, detail="Pertanyaan melebihi batas maksimum 8000 karakter.")
+
+    # 0b. Rate limit mode web (academic/web) per user
+    if request.grounding_mode in ("academic", "web"):
+        check_web_mode_rate_limit(current_user["id"])
+
+    # Guard Kepemilikan Sesi
+    if request.session_id:
+        if not storage_mgr.check_user_owns_session(current_user["id"], request.session_id):
+            raise HTTPException(status_code=404, detail="Sesi percakapan tidak ditemukan atau bukan milik Anda.")
+
+    storage_mgr.update_user_last_active(current_user["id"])
+    storage_mgr.log_activity(
+        current_user["id"],
+        "chat_prompt",
+        f"Mengajukan pertanyaan: \"{request.question[:120]}\"",
+        {"question": request.question, "mode": request.grounding_mode, "session_id": request.session_id, "has_attachments": bool(request.attachments)}
+    )
+
+    # Verifikasi Kuota Claude
+    pref = (request.model_preference or "gemini-2.0-flash").lower()
+    is_claude_selected = any(k in pref for k in ["claude", "sonnet", "anthropic"])
+    user_quota = storage_mgr.get_user_quota(current_user["id"])
+    if is_claude_selected:
+        if not user_quota.get("is_pro") or user_quota.get("claude_quota_left", 0) <= 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda telah habis. Silakan pilih Gemini 2.0 Flash (Gratis) atau tingkatkan paket Anda."
+            )
+
+    processed_attachments = []
+    user_attachments_log = []
+    if request.attachments:
+        for att in request.attachments:
+            p = AttachmentProcessor.process_attachment(
+                filename=att.filename,
+                file_type=att.file_type,
+                data_base64=att.data_base64
+            )
+            processed_attachments.append(p)
+            user_attachments_log.append({
+                "name": att.filename,
+                "type": p.get("mime_type", att.file_type),
+                "size": att.file_size or 0,
+                "dataUrl": f"data:{p.get('mime_type')};base64,{p.get('base64_data')}" if p.get("is_image") and p.get("base64_data") else None
+            })
+
+    user_docs = storage_mgr.list_user_documents(current_user["id"])
+    top_matches = []
+    focused_doc_title = None
+
+    if request.grounding_mode in ("academic", "web"):
+        chat_history = []
+        if request.session_id:
+            try:
+                prev_msgs = storage_mgr.get_chat_messages(request.session_id)
+                chat_history = prev_msgs[-4:] if prev_msgs else []
+            except Exception:
+                chat_history = []
+        academic_evidence = AcademicRetrieverService.retrieve_academic_evidence(request.question)
+        for idx, ev in enumerate(academic_evidence):
+            top_matches.append({
+                "document_id": f"academic_{idx}",
+                "document_title": ev.title,
+                "page_number": 1,
+                "passage_index": idx,
+                "passage_text": ev.abstract_snippet or "",
+                "text": ev.abstract_snippet or "",
+                "academic_item": ev
+            })
+    else:
+        norm_q = DocumentSearchIndex.normalize_query(request.question)
+        norm_q_lower = norm_q.lower()
+        q_lower = request.question.lower()
+
+        meta_keywords = [
+            "berapa file", "berapa dokumen", "ada berapa", "apa saja file", "apa saja dokumen",
+            "tentang apa aja", "tentang apa saja", "isi library", "isi perpustakaan",
+            "dalam library", "di library", "dokumen apa", "file apa", "daftar dokumen",
+            "daftar file", "list dokumen", "koleksi saya", "dokumen yang ada", "file yang ada",
+            "yang sudah saya upload", "yang saya upload", "yang saya unggah", "punya dokumen apa",
+            "punya berapa", "punya file apa", "punya berapa dokumen", "punya berapa file",
+            "ringkasan library", "semua dokumen", "ada apa aja", "ada apa saja", "library saya",
+            "dokumen library", "dokuemn library", "koleksi library", "tunjukan 1", "tunjukkan 1",
+            "ambil 1", "contoh 1", "salah satu dokumen"
+        ]
+        is_meta_query = any(k in norm_q_lower or k in q_lower for k in meta_keywords) and not processed_attachments
+
+        words_in_q = set(re.findall(r"\b\w+\b", q_lower))
+        short_greetings = {"halo", "hai", "hello", "hi", "ok", "oke", "sip", "mantap", "makasih", "thanks"}
+        has_short_greeting = bool(short_greetings.intersection(words_in_q))
+        conversational_phrases = [
+            "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
+            "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
+            "siapa yang membuat", "siapa membuat", "siapa pembuat",
+            "siapa pencipta", "siapa penciptamu", "siapa pembuatmu", "siapa developermu", "siapa pengembang",
+            "dibuat oleh siapa", "diciptakan oleh siapa", "siapa yang ciptakan",
+            "siapa yang bikin", "siapa bikin", "siapa yang buat", "siapa buat",
+            "pembuat kamu", "pencipta kamu", "perancang kamu",
+            "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
+            "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
+            "apa itu epiona", "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
+            "apa kabar", "terima kasih", "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
+            "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
+        ]
+        has_phrase = any(phrase in norm_q_lower or phrase in q_lower for phrase in conversational_phrases)
+        is_creator_query = any(w in norm_q_lower or w in q_lower for w in [
+            "menciptakan", "menciptkaan", "ciptakan", "pencipta", "pembuat", "pengembang", "develop"
+        ]) and any(p in norm_q_lower or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
+        is_conversational = (has_short_greeting or has_phrase or is_creator_query) and not processed_attachments
+
+        if not is_conversational and not is_meta_query:
+            if request.focused_document_id:
+                matched_focus_doc = next((d for d in user_docs if d["id"] == request.focused_document_id), None)
+                if matched_focus_doc:
+                    focused_doc_title = matched_focus_doc["title"]
+
+            rewritten_data = ai_service.rewrite_query_for_retrieval(request.question)
+            q_id = rewritten_data.get("rewritten_id", request.question)
+            norm_q_id = DocumentSearchIndex.normalize_query(q_id)
+
+            user_passages = storage_mgr.get_user_passages(current_user["id"])
+            corpus_passages = []
+            if user_passages:
+                for up in user_passages:
+                    corpus_passages.append({
+                        "document_id": up["document_id"],
+                        "document_title": up.get("document_title") or "Dokumen",
+                        "page_number": up["page_number"],
+                        "passage_index": up.get("passage_index", 0),
+                        "passage_text": up.get("passage_text", ""),
+                        "text": up.get("passage_text", ""),
+                        "embedding_json": up.get("embedding_json")
+                    })
+            else:
+                for d in user_docs:
+                    pages = storage_mgr.get_document_pages(d["id"])
+                    for p in pages:
+                        corpus_passages.append({
+                            "document_id": d["id"],
+                            "document_title": d["title"],
+                            "page_number": p["page_number"],
+                            "passage_index": 0,
+                            "passage_text": p["text"],
+                            "text": p["text"],
+                            "embedding_json": None
+                        })
+
+            top_matches = DocumentSearchIndex.search_hybrid(
+                query=norm_q_id,
+                passages_corpus=corpus_passages,
+                top_k=6,
+                candidate_k=20,
+                min_relevance_score=0.05,
+                preferred_document_id=request.focused_document_id
+            )
+
+    chat_history = []
+    if request.session_id:
+        try:
+            prev_msgs = storage_mgr.get_chat_messages(request.session_id)
+            chat_history = prev_msgs[-4:] if prev_msgs else []
+        except Exception:
+            chat_history = []
+
+    def sse_event_stream():
+        accumulated_answer = ""
+        final_citations = []
+        is_error = False
+        try:
+            for chunk in ai_service.stream_chat(
+                question=request.question,
+                user_docs=user_docs if request.grounding_mode not in ("academic", "web") else [],
+                relevant_pages=top_matches,
+                chat_history=chat_history,
+                attachments=processed_attachments,
+                focused_document_title=focused_doc_title,
+                model_preference=request.model_preference
+            ):
+                if chunk.get("type") == "token":
+                    t_val = chunk.get("token", "")
+                    accumulated_answer += t_val
+                    yield f"data: {json.dumps({'type': 'token', 'token': t_val})}\n\n"
+                elif chunk.get("type") == "end":
+                    final_citations = chunk.get("citations", [])
+                    is_error = chunk.get("is_error", False)
+                    full_answer = chunk.get("answer", accumulated_answer)
+
+                    smart_title = None
+                    if request.session_id:
+                        try:
+                            storage_mgr.save_chat_message(request.session_id, "user", request.question, attachments=user_attachments_log)
+                            storage_mgr.save_chat_message(
+                                request.session_id,
+                                "assistant",
+                                full_answer,
+                                citations=final_citations,
+                                figures=[]
+                            )
+                            sessions = storage_mgr.list_chat_sessions(current_user["id"])
+                            target_sess = next((s for s in sessions if s["id"] == request.session_id), None)
+                            msgs_in_session = storage_mgr.get_chat_messages(request.session_id)
+                            if target_sess and (len(msgs_in_session) <= 2 or target_sess["title"] in ("Percakapan Baru", "New Chat")):
+                                smart_title = ai_service.generate_smart_session_title(request.question, full_answer)
+                                storage_mgr.update_chat_session_title(request.session_id, smart_title)
+                        except Exception as err:
+                            print(f"[HISTORY LOG STREAM ERROR] {err}")
+
+                    quota_left = 0
+                    if is_claude_selected and not is_error:
+                        storage_mgr.deduct_claude_quota(current_user["id"])
+                    updated_quota = storage_mgr.get_user_quota(current_user["id"])
+                    quota_left = updated_quota.get("claude_quota_left", 0)
+
+                    end_payload = {
+                        "type": "end",
+                        "answer": full_answer,
+                        "citations": final_citations,
+                        "figures": [],
+                        "session_title": smart_title,
+                        "claude_quota_left": quota_left,
+                        "is_error": is_error
+                    }
+                    yield f"data: {json.dumps(end_payload)}\n\n"
+        except Exception as e:
+            err_payload = {"type": "error", "detail": str(e)}
+            yield f"data: {json.dumps(err_payload)}\n\n"
+
+    return StreamingResponse(
+        sse_event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+@app.post("/api/v1/chat")
 def ask_assistant(
     request: ChatRequest,
     background_tasks: BackgroundTasks,
     current_user: dict = Depends(get_current_user)
 ):
     """Tanya jawab asisten literatur farmasi (Hybrid General AI + MyLibrary Grounded RAG)."""
+    if getattr(request, "stream", False):
+        return ask_assistant_stream(request=request, current_user=current_user)
     # 0a. Validasi batas panjang pertanyaan (maksimal 8000 karakter)
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=400, detail="Pertanyaan tidak boleh kosong.")

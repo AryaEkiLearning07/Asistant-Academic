@@ -279,6 +279,14 @@ class LocalStorageManager:
                     created_at VARCHAR(64) NOT NULL
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS web_rate_limits (
+                    id VARCHAR(64) PRIMARY KEY,
+                    user_id VARCHAR(64) NOT NULL,
+                    timestamp DOUBLE NOT NULL,
+                    date_str VARCHAR(16) NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
             else:
                 cursor.execute("""
                 CREATE TABLE IF NOT EXISTS users (
@@ -361,6 +369,14 @@ class LocalStorageManager:
                     created_at TEXT NOT NULL
                 );
                 """)
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS web_rate_limits (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    timestamp REAL NOT NULL,
+                    date_str TEXT NOT NULL
+                );
+                """)
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_hash ON documents(file_hash);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_docs ON user_documents(user_id);")
@@ -369,6 +385,8 @@ class LocalStorageManager:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_figures ON document_figures(document_id, page_number);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_sess_user ON chat_sessions(user_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_msg_sess ON chat_messages(session_id);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_wrl_user_ts ON web_rate_limits(user_id, timestamp);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_wrl_user_date ON web_rate_limits(user_id, date_str);")
 
             # Migrasi aman: pastikan kolom attachments_json tersedia di database lama
             try:
@@ -1212,4 +1230,72 @@ class LocalStorageManager:
         else:
             self._execute("UPDATE chat_sessions SET title = %s, updated_at = %s WHERE id = %s", (title, datetime.now().isoformat(), session_id))
         return True
+
+    def get_web_mode_minute_count(self, user_id: str, window_seconds: float = 60.0) -> int:
+        """Menghitung jumlah request mode web dalam window_seconds terakhir dari database."""
+        import time
+        now = time.time()
+        cutoff = now - window_seconds
+        res = self._fetchone(
+            "SELECT COUNT(*) AS cnt FROM web_rate_limits WHERE user_id = %s AND timestamp >= %s",
+            (user_id, cutoff)
+        )
+        return int(res["cnt"]) if res and "cnt" in res else 0
+
+    def get_web_mode_daily_count(self, user_id: str, date_str: Optional[str] = None) -> int:
+        """Menghitung jumlah request mode web untuk tanggal tertentu dari database."""
+        from datetime import datetime, timezone
+        d_str = date_str or datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        res = self._fetchone(
+            "SELECT COUNT(*) AS cnt FROM web_rate_limits WHERE user_id = %s AND date_str = %s",
+            (user_id, d_str)
+        )
+        return int(res["cnt"]) if res and "cnt" in res else 0
+
+    def check_and_record_web_rate_limit(
+        self,
+        user_id: str,
+        max_per_minute: int = 10,
+        max_per_day: int = 50
+    ) -> None:
+        """Rate limit mode web persisten per user per menit dan per hari berbasis tabel database.
+        Menggantikan limiter in-memory agar aman di lingkungan multi-worker & restart server.
+        """
+        import time
+        from datetime import datetime, timezone
+        from fastapi import HTTPException
+
+        now = time.time()
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+        # 1. Verifikasi kuota harian
+        daily_count = self.get_web_mode_daily_count(user_id, today_str)
+        if daily_count >= max_per_day:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Batas kuota harian mode web ({max_per_day} kueri/hari) telah habis. Silakan coba lagi besok."
+            )
+
+        # 2. Verifikasi rate limit per menit (60 detik)
+        minute_count = self.get_web_mode_minute_count(user_id, 60.0)
+        if minute_count >= max_per_minute:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Batas penggunaan mode web terlampaui (maksimal {max_per_minute} kali per menit). Silakan tunggu beberapa saat."
+            )
+
+        # 3. Catat request baru secara persisten ke database
+        rec_id = str(uuid.uuid4())
+        self._execute(
+            "INSERT INTO web_rate_limits (id, user_id, timestamp, date_str) VALUES (%s, %s, %s, %s)",
+            (rec_id, user_id, now, today_str)
+        )
+
+        # 4. Bersihkan data kadaluwarsa (> 2 hari) secara berkala
+        try:
+            old_cutoff = now - (86400 * 2)
+            self._execute("DELETE FROM web_rate_limits WHERE timestamp < %s", (old_cutoff,))
+        except Exception:
+            pass
+
 
