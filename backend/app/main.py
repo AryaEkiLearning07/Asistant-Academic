@@ -325,15 +325,44 @@ def list_documents(current_user: dict = Depends(get_current_user)):
     return {"documents": items}
 
 def _process_pdf_background(saved_path: Path, new_doc_id: str):
-    """Proses ekstraksi teks per halaman fisik dan pemotongan gambar grafik di latar belakang (non-blocking)."""
+    """Proses ekstraksi teks per halaman fisik, potongan passage, embedding, dan pemotongan gambar di latar belakang."""
     try:
         parsed_data = PdfDocumentParser.parse_pdf(saved_path, doc_id=new_doc_id)
-        # Update total pages riil jika berbeda
-        if parsed_data.get("pages"):
-            storage_mgr.save_pages(new_doc_id, parsed_data["pages"])
+        pages = parsed_data.get("pages", [])
+        if pages:
+            storage_mgr.save_pages(new_doc_id, pages)
+
+            # Item 1: Hitung potongan passages dan simpan embedding di storage saat ingest
+            from app.indexer import chunk_text_to_passages
+            from app.embedding_service import EmbeddingService
+            all_passages = []
+            all_texts = []
+            for p in pages:
+                p_num = p["page_number"]
+                chunks = chunk_text_to_passages(p.get("text", ""))
+                for c_idx, c_text in enumerate(chunks):
+                    all_passages.append({
+                        "page_number": p_num,
+                        "passage_index": c_idx,
+                        "passage_text": c_text,
+                        "embedding_json": None
+                    })
+                    all_texts.append(c_text)
+
+            if EmbeddingService.is_available() and all_texts:
+                try:
+                    embeddings = EmbeddingService.encode_batch(all_texts)
+                    if embeddings:
+                        for idx, emb in enumerate(embeddings):
+                            all_passages[idx]["embedding_json"] = emb
+                except Exception as emb_err:
+                    print(f"[EMBEDDING ERROR] {new_doc_id}: {emb_err}")
+
+            storage_mgr.save_passages(new_doc_id, all_passages)
+
         if parsed_data.get("figures"):
             storage_mgr.save_figures(new_doc_id, parsed_data["figures"])
-        print(f"[BACKGROUND INDEXER] Sukses mengindeks {len(parsed_data.get('pages', []))} halaman dan {len(parsed_data.get('figures', []))} gambar untuk doc {new_doc_id}")
+        print(f"[BACKGROUND INDEXER] Sukses mengindeks {len(pages)} halaman dan {len(parsed_data.get('figures', []))} gambar untuk doc {new_doc_id}")
     except Exception as e:
         print(f"[BACKGROUND INDEXER ERROR] {new_doc_id}: {e}")
 
@@ -718,7 +747,11 @@ def ask_assistant(
             norm_q_lower = norm_q.lower()
 
             # Fast-Path Percakapan, Identitas & Sapaan Umum: Hindari query database yang tidak perlu
-            conversational_triggers = [
+            words_in_q = set(re.findall(r"\b\w+\b", q_lower))
+            short_greetings = {"halo", "hai", "hello", "hi", "ok", "oke", "sip", "mantap", "makasih", "thanks"}
+            has_short_greeting = bool(short_greetings.intersection(words_in_q))
+
+            conversational_phrases = [
                 "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
                 "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
                 "menciptkaan", "siapa yang membuat", "siapa membuat", "siapa pembuat",
@@ -728,19 +761,21 @@ def ask_assistant(
                 "pembuat kamu", "pencipta kamu", "perancang kamu",
                 "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
                 "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
-                "apa itu epiona", "halo", "hai", "selamat pagi", "selamat siang", "selamat malam",
-                "apa kabar", "terima kasih", "makasih", "thanks", "ok", "oke", "sip", "mantap",
+                "apa itu epiona", "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
+                "apa kabar", "terima kasih",
                 "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
                 "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
             ]
+            has_phrase = any(phrase in norm_q_lower or phrase in q_lower for phrase in conversational_phrases)
+
             is_creator_query = any(w in norm_q_lower or w in q_lower for w in [
                 "menciptakan", "menciptkaan", "ciptakan", "pencipta", "pembuat", "pengembang", "develop"
             ]) and any(p in norm_q_lower or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
 
             is_conversational = (
-                any(trigger in norm_q_lower or trigger in q_lower for trigger in conversational_triggers)
-                or is_creator_query
-            ) and not processed_attachments
+                (has_short_greeting or has_phrase or is_creator_query)
+                and not processed_attachments
+            )
 
             top_matches = []
             focused_doc_title = None
@@ -751,78 +786,72 @@ def ask_assistant(
                     if matched_focus_doc:
                         focused_doc_title = matched_focus_doc["title"]
 
-                # Seluruh modul pengguna di MyLibrary saling terhubung
-                corpus_pages = []
-                for d in user_docs:
-                    pages = storage_mgr.get_document_pages(d["id"])
-                    for p in pages:
-                        corpus_pages.append({
-                            "document_id": d["id"],
-                            "document_title": d["title"],
-                            "page_number": p["page_number"],
-                            "text": p["text"]
-                        })
+                # Item 3: Query rewriting (Claude Haiku / model murah via gateway)
+                rewritten_data = ai_service.rewrite_query_for_retrieval(request.question)
+                q_id = rewritten_data.get("rewritten_id", request.question)
+                q_en = rewritten_data.get("rewritten_en", request.question)
+                norm_q_id = DocumentSearchIndex.normalize_query(q_id)
 
-                # Cari dengan kueri normalisasi (menangani salah ketik / typo)
-                # Modul yang sedang dibuka mendapat soft priority boost tanpa memblokir modul lain
-                top_matches = DocumentSearchIndex.search_pages(
-                    query=norm_q,
-                    pages_corpus=corpus_pages,
-                    top_k=8,
+                # Ambil korpus passages tersimpan dari database (Multi-Tenant Isolation)
+                user_passages = storage_mgr.get_user_passages(current_user["id"])
+                corpus_passages = []
+                if user_passages:
+                    for up in user_passages:
+                        corpus_passages.append({
+                            "document_id": up["document_id"],
+                            "document_title": up.get("document_title") or "Dokumen",
+                            "page_number": up["page_number"],
+                            "passage_index": up.get("passage_index", 0),
+                            "passage_text": up.get("passage_text", ""),
+                            "text": up.get("passage_text", ""),
+                            "embedding_json": up.get("embedding_json")
+                        })
+                else:
+                    # Fallback on-the-fly jika dokumen diunggah sebelum tabel passages diisi
+                    for d in user_docs:
+                        pages = storage_mgr.get_document_pages(d["id"])
+                        for p in pages:
+                            corpus_passages.append({
+                                "document_id": d["id"],
+                                "document_title": d["title"],
+                                "page_number": p["page_number"],
+                                "passage_index": 0,
+                                "passage_text": p["text"],
+                                "text": p["text"],
+                                "embedding_json": None
+                            })
+
+                # Item 1 & 2: Retrieval Hybrid (BM25 + Vektor BAAI/bge-m3 via RRF + Reranker opsional)
+                top_matches = DocumentSearchIndex.search_hybrid(
+                    query=norm_q_id,
+                    passages_corpus=corpus_passages,
+                    top_k=6,
+                    candidate_k=20,
+                    min_relevance_score=0.05,
                     preferred_document_id=request.focused_document_id
                 )
 
-                # Jika pencarian leksikal halaman belum menemukan hasil tapi kueri menyebut nama/kata kunci judul dokumen
-                # HANYA lakukan afinitas global jika pengguna TIDAK sedang mengunci fokus ke satu dokumen tertentu
-                if not top_matches and not request.focused_document_id and user_docs:
-                    def calculate_doc_title_affinity(doc_title: str, query_text: str) -> int:
-                        t_clean = doc_title.lower().replace("-", " ").replace("_", " ")
-                        affinity = 0
-                        if t_clean in query_text or query_text in t_clean:
-                            affinity += 10
-                        if ("week 1" in query_text or "w1" in query_text) and ("w1" in t_clean or "week 1" in t_clean):
-                            affinity += 8
-                        for num in range(1, 15):
-                            if f"week {num}" in query_text and f"week {num}" in t_clean:
-                                affinity += 8
-                            if f"w{num}" in query_text and f"w{num}" in t_clean:
-                                affinity += 8
-                        words = [w for w in re.findall(r"\b\w+\b", t_clean) if len(w) >= 3 and w not in ["week", "doc", "pdf"]]
-                        for w in words:
-                            if w in query_text:
-                                affinity += 2
-                        return affinity
+                # Jika kueri bahasa Inggris berbeda dan hasil masih sedikit (< 3), cari juga dengan kueri EN lalu fusi RRF
+                if len(top_matches) < 3 and q_en and q_en.lower() != norm_q_id.lower():
+                    norm_q_en = DocumentSearchIndex.normalize_query(q_en)
+                    en_matches = DocumentSearchIndex.search_hybrid(
+                        query=norm_q_en,
+                        passages_corpus=corpus_passages,
+                        top_k=6,
+                        candidate_k=20,
+                        min_relevance_score=0.05,
+                        preferred_document_id=request.focused_document_id
+                    )
+                    if en_matches:
+                        top_matches = DocumentSearchIndex.reciprocal_rank_fusion(
+                            [top_matches, en_matches],
+                            k=60,
+                            top_k=6
+                        )
 
-                    scored_title_docs = []
-                    for d in user_docs:
-                        aff_score = calculate_doc_title_affinity(d["title"], norm_q_lower)
-                        if aff_score > 0:
-                            scored_title_docs.append((aff_score, d))
-
-                    scored_title_docs.sort(key=lambda x: x[0], reverse=True)
-
-                    if scored_title_docs:
-                        chosen_doc = scored_title_docs[0][1]
-                        p_pages = storage_mgr.get_document_pages(chosen_doc["id"])
-                        if p_pages:
-                            # Prioritaskan halaman yang memiliki gambar jika ini permintaan visual
-                            is_vis_req = any(w in norm_q_lower for w in ["gambar", "diagram", "grafik", "kurva", "tabel"])
-                            best_p = p_pages[0]
-                            if is_vis_req:
-                                doc_figs = storage_mgr.get_figures_for_pages(chosen_doc["id"], [p["page_number"] for p in p_pages])
-                                if doc_figs:
-                                    # Ambil halaman gambar pertama yang ada
-                                    fig_page_num = doc_figs[0]["page_number"]
-                                    for p in p_pages:
-                                        if p["page_number"] == fig_page_num:
-                                            best_p = p
-                                            break
-                            top_matches = [{
-                                "document_id": chosen_doc["id"],
-                                "document_title": chosen_doc["title"],
-                                "page_number": best_p["page_number"],
-                                "text": best_p.get("text", "")
-                            }]
+                # Item 5 Anti-Halusinasi: Fallback afinitas judul (mengirim halaman 1 paksa) DIHAPUS TOTAL.
+                # Bila tidak ada kecocokan dokumen di atas ambang batas, top_matches tetap kosong []
+                # sehingga ai_service akan menjawab secara jujur dan tegas bahwa dokumen tidak memuat jawabannya.
 
             chat_history = []
             if request.session_id:

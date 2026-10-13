@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import urllib.request
 import urllib.error
 from typing import List, Dict, Any, Optional
@@ -25,31 +26,21 @@ from app.models import ChatResponse, CitationItem
 
 logger = logging.getLogger("epiona.ai_service")
 
-CLAUDIA_STYLE_SYSTEM_PROMPT = (
+EPIONA_SYSTEM_PROMPT = (
     "Anda adalah EPIONA Academic Research Assistant, asisten kecerdasan akademik untuk riset literatur dan analisis farmasi biomedis.\n\n"
-    "IDENTITAS & PRINSIP SISTEM:\n"
-    "- Nama: EPIONA Academic Research Assistant.\n"
-    "- Pengembang: Dikembangkan oleh Arya Eki Nur Seputro sebagai platform riset literatur cerdas dengan isolasi konteks dokumen presisi tinggi dan penalaran ilmiah terstruktur.\n"
-    "- Integritas Data: Berprinsip pada grounding literatur ilmiah (zero-hallucination) dengan sitasi 1:1 ke lembar fisik dokumen serta eksplorasi jurnal terverifikasi.\n\n"
-    "STANDAR KOMUNIKASI AKADEMIK PROFESIONAL (PRESISI, ANALITIS & INVERTED PYRAMID):\n"
-    "1. Langsung Ke Inti Jawaban (Inverted Pyramid): Kalimat PERTAMA respons harus langsung menjawab inti permasalahan secara tegas, presisi, dan solutif — seperti dosen senior atau peneliti yang menjawab pertanyaan mahasiswanya. "
-    "DILARANG KERAS mengawali respons dengan salam atau filler seperti: \'Baik,\', \'Tentu,\', \'Halo,\', \'Berikut penjelasannya:\', \'Pertanyaan yang bagus!\', atau sejenisnya.\n"
-    "2. Bahasa Akademik Profesional & Mengalir: Uraikan materi dengan nada yang hidup, berwibawa, dan berbobot. Bukan chatbot — melainkan pakar yang berpikir keras dan menuangkan analisis mendalam secara lugas. Gunakan peristilahan farmasi/sains yang presisi, serta analogi intuitif untuk konsep yang abstrak.\n"
-    "3. Logika Analitis Terstruktur dengan Heading Markdown: Gunakan ### untuk sub-topik. Struktur ideal: (a) Jawaban inti langsung, (b) Mekanisme/Patofisiologi/Fondasi Teori (dengan heading ###), (c) Aplikasi Klinis atau Contoh Komputasi Nyata, (d) Implikasi Praktis/Catatan Penting. Gunakan paragraf analitis padat, bukan poin-poin dangkal.\n"
-    "4. Tipografi Bersih: Sintaks Markdown standar. **Tebal** untuk istilah teknis pertama kali muncul. Gunakan - atau 1. hanya jika konten benar-benar paralel dan setara.\n"
-    "5. Format Rumus & Notasi Sains (Wajib LaTeX):\n"
-    "   - SEMUA rumus matematika, farmakokinetika, dosis, dan variabel kimia/fisika WAJIB LaTeX: $...$ untuk inline (contoh: $t_{1/2}$, $C_{max}$, $V_d$, $AUC$, $pH = pKa + \\\\log\\\\frac{[A^-]}{[HA]}$) dan $$...$$ untuk rumus blok.\n"
-    "   - Jelaskan setiap variabel rumus secara runut (\u2018di mana $C_0$ adalah konsentrasi awal...\u2019).\n\n"
-    "ATURAN GROUNDING RUJUKAN:\n"
-    "1. JIKA ADA KONTEKS DOKUMEN MYLIBRARY: Jawab fokus pada topik, cantumkan [1], [2] secara inline setelah klaim yang merujuk dokumen spesifik. Sebutkan nama dokumen dalam kalimat (contoh: \'Berdasarkan Modul Farmakokinetika [1]...\' atau \'Sebagaimana diuraikan dalam materi Metode Numerik [2]...\'). Hubungkan lintas modul jika diperlukan.\n"
-    "   Di akhir jawaban (setelah teks prosa selesai), tambahkan baris berikut PERSIS seperti ini:\n"
-    "   CITATIONS_JSON:[{\"document_id\":\"id\",\"document_title\":\"judul\",\"page_number\":1,\"exact_quote\":\"kutipan\"}]\n"
-    "2. JIKA PERTANYAAN KONSEPTUAL UMUM (tidak ada di dokumen): JAWAB SECARA TUNTAS. Jangan pernah menolak dengan kalimat kaku. Di akhir, tambahkan satu baris catatan: \n"
-    "   *(Catatan: Penjelasan ini bersifat konseptual analitis tambahan di luar materi spesifik dokumen referensi.)*\n\n"
-    "FORMAT OUTPUT WAJIB: PROSA AKADEMIK MARKDOWN MENGALIR.\n"
-    "Tulis jawaban sebagai teks Markdown ilmiah mengalir — BUKAN JSON mentah. Respons harus dapat dibaca langsung tanpa parsing. "
-    "Hanya tambahkan baris CITATIONS_JSON: di akhir jika ada sitasi dokumen. Tidak ada wrapper JSON di seluruh respons."
+    "IDENTITAS & PRINSIP DASAR:\n"
+    "- Nama: EPIONA Academic Research Assistant (dikembangkan oleh Arya Eki Nur Seputro).\n"
+    "- Ranah: Riset literatur akademik farmasi, biomedis, dan sains komputasi.\n"
+    "- Komunikasi Ilmiah (Inverted Pyramid): Kalimat pertama langsung menjawab inti pertanyaan secara presisi tanpa basa-basi atau salam pembuka robotik ('Baik', 'Tentu', 'Halo').\n"
+    "- Format: Prosa Markdown mengalir, gunakan ### untuk sub-topik, dan notasi rumus wajib LaTeX ($...$ atau $$...$$).\n"
+    "- Grounding & Integritas (Anti-Halusinasi): Berpijak mutlak pada bukti konteks dokumen yang diberikan. Cantumkan sitasi [1], [2] secara inline.\n"
+    "- Jika konteks dokumen rujukan tidak memuat informasi yang ditanyakan, katakan secara lugas bahwa dokumen tidak memuat jawabannya. Dilarang mengarang informasi dokumen.\n"
+    "- Cantumkan baris metadata sitasi di akhir jika merujuk konteks dokumen:\n"
+    "  CITATIONS_JSON:[{\"document_id\":\"id\",\"document_title\":\"judul\",\"page_number\":1,\"exact_quote\":\"kutipan\"}]"
 )
+
+# Alias backward compatibility
+CLAUDIA_STYLE_SYSTEM_PROMPT = EPIONA_SYSTEM_PROMPT
 
 class AssistantAiService:
     def __init__(
@@ -149,6 +140,116 @@ class AssistantAiService:
             self.router_api_key = router_key.strip()
         if router_model:
             self.router_model = router_model.strip()
+
+    def rewrite_query_for_retrieval(self, question: str) -> Dict[str, str]:
+        """Item 3: Menulis ulang pertanyaan pengguna menggunakan model cepat/murah (Claude Haiku via gateway)
+        menjadi kueri spesifik bahasa Indonesia dan padanan istilah bahasa Inggris untuk retrieval.
+        Fallback aman ke pertanyaan asli bila gagal.
+        """
+        fallback = {"rewritten_id": question.strip(), "rewritten_en": question.strip()}
+        if not question or len(question.strip()) < 3:
+            return fallback
+
+        prompt = (
+            "Anda adalah modul query rewriting untuk sistem RAG akademik farmasi.\n"
+            "Tulis ulang pertanyaan berikut menjadi:\n"
+            "1. 'rewritten_id': kueri pencarian bahasa Indonesia yang jelas dan spesifik.\n"
+            "2. 'rewritten_en': terjemahan padanan istilah ilmiah farmasi/medis dalam bahasa Inggris.\n"
+            "Kembalikan HANYA format JSON tanpa teks pembuka/penutup:\n"
+            "{\"rewritten_id\": \"...\", \"rewritten_en\": \"...\"}\n\n"
+            f"Pertanyaan: {question.strip()}"
+        )
+
+        import json as _json
+        import re as _re
+
+        # 1. Coba Anthropic Direct (Claude 3.5 Haiku)
+        if self.anthropic_api_key:
+            try:
+                payload = {
+                    "model": "claude-3-5-haiku-20241022",
+                    "max_tokens": 150,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0
+                }
+                req = urllib.request.Request(
+                    f"{self.anthropic_base_url}/v1/messages",
+                    data=_json.dumps(payload).encode("utf-8"),
+                    headers={
+                        "x-api-key": self.anthropic_api_key,
+                        "anthropic-version": "2023-06-01",
+                        "content-type": "application/json"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    res_body = _json.loads(resp.read().decode("utf-8"))
+                txt = res_body["content"][0]["text"].strip()
+                m = _re.search(r'\{.*?\}', txt, _re.DOTALL)
+                if m:
+                    parsed = _json.loads(m.group(0))
+                    if "rewritten_id" in parsed and "rewritten_en" in parsed:
+                        return {
+                            "rewritten_id": parsed["rewritten_id"].strip(),
+                            "rewritten_en": parsed["rewritten_en"].strip()
+                        }
+            except Exception as e:
+                logger.debug(f"Haiku rewrite fallback: {e}")
+
+        # 2. Coba OpenRouter (Claude Haiku / model cepat)
+        if self.openrouter_api_key:
+            try:
+                payload = {
+                    "model": "anthropic/claude-3.5-haiku",
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0,
+                    "max_tokens": 150
+                }
+                req = urllib.request.Request(
+                    f"{self.openrouter_base_url}/chat/completions",
+                    data=_json.dumps(payload).encode("utf-8"),
+                    headers={
+                        "Content-Type": "application/json",
+                        "Authorization": f"Bearer {self.openrouter_api_key}"
+                    },
+                    method="POST"
+                )
+                with urllib.request.urlopen(req, timeout=4) as resp:
+                    res_body = _json.loads(resp.read().decode("utf-8"))
+                txt = res_body["choices"][0]["message"]["content"].strip()
+                m = _re.search(r'\{.*?\}', txt, _re.DOTALL)
+                if m:
+                    parsed = _json.loads(m.group(0))
+                    if "rewritten_id" in parsed and "rewritten_en" in parsed:
+                        return {
+                            "rewritten_id": parsed["rewritten_id"].strip(),
+                            "rewritten_en": parsed["rewritten_en"].strip()
+                        }
+            except Exception as e:
+                logger.debug(f"OpenRouter Haiku rewrite fallback: {e}")
+
+        # 3. Coba Groq LPU (cepat ~200ms) jika ada
+        if self.groq_client:
+            try:
+                chat_res = self.groq_client.chat.completions.create(
+                    messages=[{"role": "user", "content": prompt}],
+                    model=self.groq_model,
+                    temperature=0.0,
+                    max_tokens=150
+                )
+                txt = chat_res.choices[0].message.content.strip()
+                m = _re.search(r'\{.*?\}', txt, _re.DOTALL)
+                if m:
+                    parsed = _json.loads(m.group(0))
+                    if "rewritten_id" in parsed and "rewritten_en" in parsed:
+                        return {
+                            "rewritten_id": parsed["rewritten_id"].strip(),
+                            "rewritten_en": parsed["rewritten_en"].strip()
+                        }
+            except Exception as e:
+                logger.debug(f"Groq rewrite fallback: {e}")
+
+        return fallback
 
     @staticmethod
     def _extract_text_from_raw_openai(raw_text: str) -> str:
@@ -269,23 +370,29 @@ class AssistantAiService:
             and any(p in norm_q or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
         ) or any(t in q_lower or t in norm_q for t in ["siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu", "apa nama sistem ini", "siapakah kamu", "siapa sih kamu"])
 
-        conversational_triggers = [
+        words_in_q = set(re.findall(r"\b\w+\b", q_lower))
+        short_greetings = {"halo", "hai", "hello", "hi", "ok", "oke", "sip", "mantap", "makasih", "thanks"}
+        has_short_greeting = bool(short_greetings.intersection(words_in_q))
+
+        conversational_phrases = [
             "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
             "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
-            "menciptkaan", "siapa yang membuat", "siapa membuat", "siapa pembuat",
+            "siapa yang membuat", "siapa membuat", "siapa pembuat",
             "siapa pencipta", "siapa penciptamu", "siapa pembuatmu", "siapa developermu", "siapa pengembang",
             "dibuat oleh siapa", "diciptakan oleh siapa", "siapa yang ciptakan",
             "siapa yang bikin", "siapa bikin", "siapa yang buat", "siapa buat",
             "pembuat kamu", "pencipta kamu", "perancang kamu",
             "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
             "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
-            "apa itu epiona", "halo", "hai", "selamat pagi", "selamat siang", "selamat malam",
-            "apa kabar", "terima kasih", "makasih", "thanks", "ok", "oke", "sip", "mantap",
+            "apa itu epiona", "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
+            "apa kabar", "terima kasih",
             "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
             "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
         ]
+        has_phrase = any(phrase in q_lower or phrase in norm_q for phrase in conversational_phrases)
+
         is_conversational = (
-            (is_creator_or_identity or any(trigger in q_lower or trigger in norm_q for trigger in conversational_triggers))
+            (is_creator_or_identity or has_short_greeting or has_phrase)
             and not attachments
         )
 
@@ -296,6 +403,21 @@ class AssistantAiService:
                     "MyLibrary Anda masih kosong. Silakan unggah dokumen PDF modul atau buku farmasi Anda "
                     "terlebih dahulu ke MyLibrary untuk memulai diskusi berbasis literatur terverifikasi, "
                     "atau beralih ke mode Academic untuk mencari publikasi ilmiah internasional."
+                ),
+                citations=[]
+            )
+
+        # 1c. Item 5 Anti-Halusinasi: Bila skor retrieval di bawah ambang (relevant_pages kosong),
+        # jawab jelas bahwa dokumen tidak memuat jawabannya (jangan jawab umum seolah dari dokumen)
+        if not relevant_pages and not is_conversational and not attachments:
+            doc_context = f" dalam modul **{focused_document_title}** maupun koleksi MyLibrary Anda" if focused_document_title else " dalam koleksi dokumen MyLibrary Anda"
+            return ChatResponse(
+                answer=(
+                    f"Dokumen di MyLibrary tidak memuat informasi mengenai *\"{question}\"*{doc_context}.\n\n"
+                    "**Rekomendasi Penelusuran:**\n"
+                    "- Periksa kembali kata kunci atau istilah teknis yang dicari pada modul/e-book Anda.\n"
+                    "- Unggah modul/dokumen farmasi tambahan yang memuat materi terkait.\n"
+                    "- Atau beralih ke mode **Web Akademik** di samping tombol Kirim untuk menelusuri jurnal internasional (PubMed/arXiv)."
                 ),
                 citations=[]
             )
@@ -378,9 +500,13 @@ class AssistantAiService:
                 is_error=True
             )
 
+        provider_errors = []
+        has_configured_providers = False
+
         if prefer_gemini:
             # Jika user secara eksplisit memilih Gemini
             if self.gemini_keys:
+                has_configured_providers = True
                 try:
                     return self._call_gemini_pool(
                         question=question,
@@ -392,12 +518,13 @@ class AssistantAiService:
                         focused_document_title=focused_document_title
                     )
                 except Exception as e:
-                    logger.warning(f"Preferred Gemini Pool error: {e}. Mengalihkan ke 9Router lokal.")
+                    logger.warning(f"Preferred Gemini Pool error: {e}. Mengalihkan ke provider berikutnya.")
+                    provider_errors.append(f"Gemini: {e}")
 
         # 3. Prioritas Default (9Router AI Gateway / OpenRouter / Anthropic / Gemini / Groq)
         if self._is_router_alive():
+            has_configured_providers = True
             router_models_to_try = [self.router_model, "gemini/gemini-3.7-flash", "gemini/gemini-3.6-flash"]
-            # Deduplikasi urutan model
             seen_models = set()
             unique_models = []
             for m in router_models_to_try:
@@ -421,9 +548,11 @@ class AssistantAiService:
                         is_openrouter=False
                     )
                 except Exception as e:
-                    logger.warning(f"9Router ({r_model}) error: {e}. Mencoba alternatif...")
+                    logger.warning(f"9Router ({r_model}) error: {e}.")
+                    provider_errors.append(f"9Router ({r_model}): {e}")
 
         if self.openrouter_api_key:
+            has_configured_providers = True
             try:
                 return self._call_openai_compatible(
                     endpoint=f"{self.openrouter_base_url}/chat/completions",
@@ -439,9 +568,11 @@ class AssistantAiService:
                     is_openrouter=True
                 )
             except Exception as e:
-                logger.warning(f"OpenRouter error: {e}. Mengalihkan ke provider berikutnya.")
+                logger.warning(f"OpenRouter error: {e}.")
+                provider_errors.append(f"OpenRouter: {e}")
 
         if self.anthropic_api_key:
+            has_configured_providers = True
             try:
                 return self._call_anthropic_direct(
                     question=question,
@@ -453,9 +584,11 @@ class AssistantAiService:
                     focused_document_title=focused_document_title
                 )
             except Exception as e:
-                logger.warning(f"Anthropic error: {e}. Mengalihkan ke provider berikutnya.")
+                logger.warning(f"Anthropic error: {e}.")
+                provider_errors.append(f"Anthropic: {e}")
 
         if self.gemini_keys:
+            has_configured_providers = True
             try:
                 return self._call_gemini_pool(
                     question=question,
@@ -467,9 +600,11 @@ class AssistantAiService:
                     focused_document_title=focused_document_title
                 )
             except Exception as e:
-                logger.warning(f"Gemini Pool error: {e}. Mengalihkan ke Groq.")
+                logger.warning(f"Gemini Pool error: {e}.")
+                provider_errors.append(f"Gemini: {e}")
 
         if self.groq_client:
+            has_configured_providers = True
             try:
                 return self._call_groq(
                     question=question,
@@ -480,9 +615,39 @@ class AssistantAiService:
                     focused_document_title=focused_document_title
                 )
             except Exception as e:
-                logger.warning(f"Groq error: {e}. Mengalihkan ke sintesis lokal.")
+                logger.warning(f"Groq error: {e}.")
+                provider_errors.append(f"Groq: {e}")
 
-        # 7. Fallback lokal cerdas jika offline / tanpa API key
+        # Item 7: Error provider jangan ditelan bila semua provider yang dikonfigurasi gagal
+        if has_configured_providers and provider_errors:
+            error_details = "\n".join([f"- {pe}" for pe in provider_errors])
+            # Jika ada dokumen relevan yang cocok, jalankan sintesis lokal dengan catatan transparansi
+            if relevant_pages:
+                local_resp = self._local_smart_synthesis(
+                    question=question,
+                    relevant_pages=relevant_pages,
+                    user_docs=user_docs,
+                    is_conversational=is_conversational,
+                    doc_attachments=doc_attachments,
+                    image_attachments=image_attachments,
+                    focused_document_title=focused_document_title
+                )
+                warning_notice = f"\n\n*(Catatan Transparansi Sistem: Penyedia AI cloud mengalami kendala ({provider_errors[0]}). Jawaban disintesis secara lokal menggunakan mesin inferensi deterministik MyLibrary.)*"
+                local_resp.answer += warning_notice
+                return local_resp
+            else:
+                return ChatResponse(
+                    answer=(
+                        "### ⚠️ Gagal Menghubungi Penyedia Layanan AI\n\n"
+                        "Seluruh penyedia AI yang dikonfigurasi mengalami kendala koneksi, autentikasi, atau kuota:\n"
+                        f"{error_details}\n\n"
+                        "Silakan periksa konfigurasi API key pada pengaturan atau coba beberapa saat lagi."
+                    ),
+                    citations=[],
+                    is_error=True
+                )
+
+        # 7. Fallback lokal cerdas jika offline / tanpa API key sama sekali
         return self._local_smart_synthesis(
             question=question,
             relevant_pages=relevant_pages,
@@ -664,10 +829,19 @@ class AssistantAiService:
         user_content_items.append({"type": "text", "text": user_prompt})
         messages.append({"role": "user", "content": user_content_items})
 
+        # Item 8: Prompt sistem tetap singkat dan di-cache (ephemeral cache), terpisah dari konteks dokumen
+        system_payload = [
+            {
+                "type": "text",
+                "text": EPIONA_SYSTEM_PROMPT,
+                "cache_control": {"type": "ephemeral"}
+            }
+        ]
+
         payload = {
             "model": self.anthropic_model,
             "max_tokens": 3000,
-            "system": CLAUDIA_STYLE_SYSTEM_PROMPT,
+            "system": system_payload,
             "messages": messages,
             "temperature": 0.7 if (not relevant_pages and not doc_attachments) else 0.35
         }
@@ -679,6 +853,7 @@ class AssistantAiService:
             headers={
                 "x-api-key": self.anthropic_api_key,
                 "anthropic-version": "2023-06-01",
+                "anthropic-beta": "prompt-caching-2024-07-25",
                 "content-type": "application/json"
             },
             method="POST"
@@ -1009,10 +1184,23 @@ class AssistantAiService:
                 citations=[]
             )
 
-        if is_conversational or not relevant_pages:
+        # Item 5 Anti-Halusinasi: Bila skor retrieval di bawah ambang (relevant_pages kosong),
+        # tolak dengan tegas bahwa dokumen tidak memuat jawabannya (jangan jawab umum seolah dari dokumen)
+        if not relevant_pages and not is_conversational:
+            doc_context = f" dalam modul **{focused_document_title}** maupun koleksi MyLibrary Anda" if focused_document_title else " dalam koleksi dokumen MyLibrary Anda"
+            return ChatResponse(
+                answer=(
+                    f"Dokumen di MyLibrary tidak memuat informasi mengenai *\"{question}\"*{doc_context}.\n\n"
+                    "**Rekomendasi Penelusuran:**\n"
+                    "- Periksa kembali kata kunci atau istilah teknis yang dicari pada modul/e-book Anda.\n"
+                    "- Unggah modul/dokumen farmasi tambahan yang memuat materi terkait.\n"
+                    "- Atau beralih ke mode **Web Akademik** di samping tombol Kirim untuk menelusuri jurnal internasional (PubMed/arXiv)."
+                ),
+                citations=[]
+            )
+
+        if is_conversational:
             reasoned_answer = self._reason_open_domain_answer(question, user_docs)
-            if focused_document_title and not is_conversational:
-                reasoned_answer += f"\n\n*(Catatan: Rincian ini merupakan penjelasan konseptual analitis tambahan, karena materi tersebut tidak diuraikan secara spesifik dalam modul **{focused_document_title}** yang sedang Anda buka.)*"
             return ChatResponse(
                 answer=reasoned_answer,
                 citations=[]

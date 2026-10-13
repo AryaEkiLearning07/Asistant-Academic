@@ -732,13 +732,20 @@ export default function AppRoot() {
       });
 
       if (!res.ok) {
-        if (res.status === 403) {
-          const errData = await res.json().catch(() => ({}));
-          const errMsg = typeof errData.detail === "string" ? errData.detail : "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.";
-          setIsSubscriptionModalOpen(true);
-          throw new Error(errMsg);
+        const errData = await res.json().catch(() => ({}));
+        let errMsg = "Gagal mendapatkan respon asisten";
+        if (typeof errData.detail === "string") {
+          errMsg = errData.detail;
+        } else if (typeof errData.message === "string") {
+          errMsg = errData.message;
         }
-        throw new Error("Gagal mendapatkan respon asisten");
+        if (res.status === 403) {
+          setIsSubscriptionModalOpen(true);
+          if (!errData.detail) {
+            errMsg = "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.";
+          }
+        }
+        throw new Error(errMsg);
       }
       const data = await res.json();
       stopStatus();

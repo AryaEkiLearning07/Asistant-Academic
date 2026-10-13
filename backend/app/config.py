@@ -83,3 +83,7 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 FALLBACK_MODEL = os.getenv("FALLBACK_MODEL", "llama-3.1-8b-instant")
 
+# Embedding & Reranker Multilingual Model (Hybrid Retrieval & RRF)
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "").strip()
+RERANKER_MODEL = os.getenv("RERANKER_MODEL", "").strip()
+

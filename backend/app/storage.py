@@ -238,6 +238,17 @@ class LocalStorageManager:
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
                 """)
                 cursor.execute("""
+                CREATE TABLE IF NOT EXISTS document_passages (
+                    id VARCHAR(64) PRIMARY KEY,
+                    document_id VARCHAR(64) NOT NULL,
+                    page_number INT NOT NULL,
+                    passage_index INT NOT NULL,
+                    passage_text MEDIUMTEXT NOT NULL,
+                    embedding_json MEDIUMTEXT,
+                    created_at VARCHAR(64) NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+                cursor.execute("""
                 CREATE TABLE IF NOT EXISTS document_figures (
                     id VARCHAR(64) PRIMARY KEY,
                     document_id VARCHAR(64) NOT NULL,
@@ -309,6 +320,17 @@ class LocalStorageManager:
                 );
                 """)
                 cursor.execute("""
+                CREATE TABLE IF NOT EXISTS document_passages (
+                    id TEXT PRIMARY KEY,
+                    document_id TEXT NOT NULL,
+                    page_number INTEGER NOT NULL,
+                    passage_index INTEGER NOT NULL,
+                    passage_text TEXT NOT NULL,
+                    embedding_json TEXT,
+                    created_at TEXT NOT NULL
+                );
+                """)
+                cursor.execute("""
                 CREATE TABLE IF NOT EXISTS document_figures (
                     id TEXT PRIMARY KEY,
                     document_id TEXT NOT NULL,
@@ -343,6 +365,7 @@ class LocalStorageManager:
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_hash ON documents(file_hash);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_docs ON user_documents(user_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_pages_doc ON document_pages(document_id, page_number);")
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_passages_doc ON document_passages(document_id, page_number);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_doc_figures ON document_figures(document_id, page_number);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_sess_user ON chat_sessions(user_id);")
                 cursor.execute("CREATE INDEX IF NOT EXISTS idx_chat_msg_sess ON chat_messages(session_id);")
@@ -913,6 +936,7 @@ class LocalStorageManager:
                 pass
 
             self._execute("DELETE FROM document_figures WHERE document_id = %s", (document_id,))
+            self._execute("DELETE FROM document_passages WHERE document_id = %s", (document_id,))
             self._execute("DELETE FROM document_pages WHERE document_id = %s", (document_id,))
             self._execute("DELETE FROM documents WHERE id = %s", (document_id,))
 
@@ -975,6 +999,52 @@ class LocalStorageManager:
         WHERE document_id = %s ORDER BY page_number ASC
         """, (document_id,))
         return [{"page_number": r["page_number"], "text": r["text_content"]} for r in rows]
+
+    def save_passages(self, document_id: str, passages_data: List[Dict[str, Any]]) -> None:
+        """Simpan teks per passage / potongan terstruktur dokumen beserta embedding vektor opsional."""
+        if not passages_data:
+            return
+        import json
+        now_iso = datetime.now().isoformat()
+        records = []
+        for p in passages_data:
+            pid = p.get("id") or str(uuid.uuid4())
+            emb = p.get("embedding_json")
+            if isinstance(emb, (list, dict)):
+                emb = json.dumps(emb)
+            records.append((
+                pid,
+                document_id,
+                int(p["page_number"]),
+                int(p.get("passage_index", 0)),
+                p.get("passage_text", ""),
+                emb,
+                now_iso
+            ))
+        self._executemany("""
+        INSERT INTO document_passages (id, document_id, page_number, passage_index, passage_text, embedding_json, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, records)
+
+    def get_document_passages(self, document_id: str) -> List[Dict[str, Any]]:
+        """Ambil seluruh passage dari satu dokumen."""
+        return self._fetchall("""
+        SELECT id, document_id, page_number, passage_index, passage_text, embedding_json, created_at
+        FROM document_passages
+        WHERE document_id = %s
+        ORDER BY page_number ASC, passage_index ASC
+        """, (document_id,))
+
+    def get_user_passages(self, user_id: str) -> List[Dict[str, Any]]:
+        """Ambil seluruh passage dari semua dokumen milik pengguna (Multi-Tenant Isolation)."""
+        return self._fetchall("""
+        SELECT p.id, p.document_id, ud.title_alias AS document_title, p.page_number, 
+               p.passage_index, p.passage_text, p.embedding_json, p.created_at
+        FROM document_passages p
+        JOIN user_documents ud ON p.document_id = ud.document_id
+        WHERE ud.user_id = %s
+        ORDER BY ud.created_at DESC, p.page_number ASC, p.passage_index ASC
+        """, (user_id,))
 
     def save_figures(self, document_id: str, figures_data: List[Dict[str, Any]]) -> None:
         """Simpan metadata gambar/kurva/diagram yang dipotong dari PDF."""

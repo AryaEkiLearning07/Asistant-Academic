@@ -211,7 +211,8 @@ class AcademicRetrieverService:
                 pdf_url = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/pdf/" if pmcid else None
 
                 raw_abstract = abstracts_dict.get(uid, "").strip()
-                translated_abstract = cls.translate_to_indonesian(raw_abstract[:600]) if raw_abstract else None
+                # Item 6: Kirim teks abstrak asli lengkap tanpa pemotongan 600 char & tanpa Google Translate tidak resmi
+                abstract_snippet = raw_abstract if raw_abstract else None
 
                 results.append({
                     "source_type": "academic_web",
@@ -223,7 +224,7 @@ class AcademicRetrieverService:
                     "doi": doi,
                     "url": url,
                     "pdf_url": pdf_url,
-                    "abstract_snippet": translated_abstract
+                    "abstract_snippet": abstract_snippet
                 })
         except Exception as e:
             logger.warning(f"[PUBMED SEARCH ERROR] {e}")
@@ -271,7 +272,8 @@ class AcademicRetrieverService:
                     if link.get("title") == "pdf" or link.get("type") == "application/pdf":
                         pdf_link = link.get("href")
 
-                translated_summary = cls.translate_to_indonesian(summary[:500]) if summary else None
+                # Item 6: Kirim abstrak asli lengkap (Bahasa Inggris) ke model
+                abstract_snippet = summary.strip() if summary else None
 
                 results.append({
                     "source_type": "academic_web",
@@ -283,7 +285,7 @@ class AcademicRetrieverService:
                     "doi": None,
                     "url": entry_id,
                     "pdf_url": pdf_link or (f"{entry_id}.pdf" if entry_id else None),
-                    "abstract_snippet": translated_summary
+                    "abstract_snippet": abstract_snippet
                 })
 
         except Exception as e:
