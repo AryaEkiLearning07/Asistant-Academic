@@ -663,7 +663,8 @@ export default function AppRoot() {
     setIsTypingStream(true);
     setStreamingMsgId(msgId);
 
-    const tokens = fullText.match(/\S+\s*|\s+/g) || [fullText];
+    const cleanText = (fullText || "").trim() || "Maaf, respon asisten tidak tersedia.";
+    const tokens = cleanText.match(/\S+\s*|\s+/g) || [cleanText];
     let currentIndex = 0;
     let accumulatedText = "";
     const totalTokens = tokens.length;
@@ -672,7 +673,7 @@ export default function AppRoot() {
     const intervalId = setInterval(() => {
       if (currentIndex >= tokens.length) {
         clearInterval(intervalId);
-        setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, text: fullText } : m)));
+        setMessages((prev) => prev.map((m) => (m.id === msgId ? { ...m, text: cleanText } : m)));
         setIsTypingStream(false);
         setStreamingMsgId(null);
         if (onComplete) onComplete();
@@ -796,19 +797,23 @@ export default function AppRoot() {
             try {
               const eventData = JSON.parse(dataStr);
               if (eventData.type === "token") {
-                accumulatedText += eventData.token || "";
-                setMessages((prev) =>
-                  prev.map((m) => (m.id === msgId ? { ...m, text: accumulatedText } : m))
-                );
-                chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+                const tokenStr = eventData.token || "";
+                if (tokenStr) {
+                  accumulatedText += tokenStr;
+                  setMessages((prev) =>
+                    prev.map((m) => (m.id === msgId ? { ...m, text: accumulatedText } : m))
+                  );
+                  chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+                }
               } else if (eventData.type === "end") {
-                const finalAnswer = eventData.answer || accumulatedText;
+                const finalAnswer = (eventData.answer || accumulatedText || "").trim();
+                const displayAnswer = finalAnswer || (eventData.is_error ? "Terjadi kendala teknis pada layanan AI." : "Maaf, respon asisten tidak tersedia.");
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === msgId
                       ? {
                           ...m,
-                          text: finalAnswer,
+                          text: displayAnswer,
                           citations: eventData.citations || [],
                           figures: eventData.figures || [],
                         }
@@ -830,13 +835,22 @@ export default function AppRoot() {
                 throw new Error(eventData.detail || "Terjadi kesalahan pada respon streaming asisten.");
               }
             } catch (pErr: any) {
-              if (pErr.message?.includes("Terjadi kesalahan") || pErr.message?.includes("streaming")) {
-                throw pErr;
+              if (pErr instanceof SyntaxError) {
+                // Abaikan jika baris JSON terpotong di tengah stream
+                continue;
               }
+              throw pErr;
             }
           }
         }
         clearTimeout(timeoutId);
+
+        if (!isSseSuccess && accumulatedText.trim()) {
+          setMessages((prev) =>
+            prev.map((m) => (m.id === msgId ? { ...m, text: accumulatedText.trim() } : m))
+          );
+          isSseSuccess = true;
+        }
       }
 
       // Fallback ke non-stream /api/v1/chat jika SSE tidak dieksekusi
@@ -877,6 +891,7 @@ export default function AppRoot() {
         }
 
         const data = await fallbackRes.json();
+        const answerText = (data.answer || "").trim() || "Maaf, respon asisten tidak tersedia.";
         if (typeof data.claude_quota_left === "number") {
           setCurrentUser((prev) => (prev ? { ...prev, claude_quota_left: data.claude_quota_left } : null));
         }
@@ -887,7 +902,7 @@ export default function AppRoot() {
         }
 
         streamAssistantReply(
-          data.answer,
+          answerText,
           data.citations || [],
           data.figures || [],
           onComplete,

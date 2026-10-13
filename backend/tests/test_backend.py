@@ -79,13 +79,14 @@ class TestEpionaAssistantBackend(unittest.TestCase):
         res_forbidden = self.client.get(f"/api/v1/documents/{doc_a_id}/pdf", headers={"X-User-Id": token_b})
         self.assertEqual(res_forbidden.status_code, 403)
 
-        # 7. ISOLASI: User B bertanya ke AI -> ditolak karena library masih kosong
+        # 7. ISOLASI & P3A KEBIJAKAN BERTINGKAT: User B bertanya ke AI tanpa dokumen di library -> dijawab dari pengetahuan umum dengan catatan tanpa sitasi
         chat_b_empty = self.client.post(
             "/api/v1/chat",
             json={"question": "Apa itu Vd?"},
             headers={"X-User-Id": token_b}
         ).json()
-        self.assertIn("MyLibrary Anda masih kosong", chat_b_empty["answer"])
+        self.assertEqual(len(chat_b_empty["citations"]), 0)
+        self.assertIn("Tidak ditemukan di dokumenmu", chat_b_empty["answer"])
 
         # 8. User A bertanya ke AI -> berhasil mendapatkan jawaban bersitasi halaman 1
         chat_a = self.client.post(

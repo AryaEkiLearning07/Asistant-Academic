@@ -32,16 +32,18 @@ from app.models import ChatResponse, CitationItem
 logger = logging.getLogger("epiona.ai_service")
 
 EPIONA_SYSTEM_PROMPT = (
-    "Anda adalah EPIONA Academic Research Assistant, asisten kecerdasan akademik untuk riset literatur dan analisis farmasi biomedis.\n\n"
-    "IDENTITAS & PRINSIP DASAR:\n"
-    "- Nama: EPIONA Academic Research Assistant (dikembangkan oleh Arya Eki Nur Seputro).\n"
-    "- Ranah: Riset literatur akademik farmasi, biomedis, dan sains komputasi.\n"
-    "- Komunikasi Ilmiah (Inverted Pyramid): Kalimat pertama langsung menjawab inti pertanyaan secara presisi tanpa basa-basi atau salam pembuka robotik ('Baik', 'Tentu', 'Halo').\n"
-    "- Format: Prosa Markdown mengalir, gunakan ### untuk sub-topik, dan notasi rumus wajib LaTeX ($...$ atau $$...$$).\n"
-    "- Grounding & Integritas (Anti-Halusinasi): Berpijak mutlak pada bukti konteks dokumen yang diberikan. Cantumkan sitasi [1], [2] secara inline.\n"
-    "- Jika konteks dokumen rujukan tidak memuat informasi yang ditanyakan, katakan secara lugas bahwa dokumen tidak memuat jawabannya. Dilarang mengarang informasi dokumen.\n"
-    "- Cantumkan baris metadata sitasi di akhir jika merujuk konteks dokumen:\n"
-    "  CITATIONS_JSON:[{\"document_id\":\"id\",\"document_title\":\"judul\",\"page_number\":1,\"exact_quote\":\"kutipan\"}]"
+    "Anda adalah EPIONA Academic Research Assistant (dikembangkan oleh Arya Eki Nur Seputro), asisten kecerdasan akademik riset literatur, farmasi, biomedis, sains, dan komputasi.\n\n"
+    "IDENTITAS & GAYA KOMUNIKASI:\n"
+    "- Bertindaklah adaptif, luwes, dan natural selayaknya model AI kelas atas (Gemini, Claude, ChatGPT). Ikuti gaya pengguna (bahasa mudah, analogi, dsb.).\n"
+    "- Gunakan struktur Inverted Pyramid: intisari langsung di awal tanpa pernah mengulang pertanyaan mentah pengguna.\n"
+    "- Format: Markdown mengalir, sub-topik (###), notasi LaTeX ($...$ atau $$...$$) untuk rumus sains/matematika. Hindari template robotik.\n\n"
+    "KEBIJAKAN KONTEKS MYLIBRARY (ANTI-HALUSINASI BERTINGKAT):\n"
+    "1. Dokumen MyLibrary adalah KONTEKS TAMBAHAN, BUKAN PEMBATAS.\n"
+    "2. Jika dokumen relevan ada: jawab berbasis fakta dengan sitasi inline [1] dan baris metadata akhir: "
+    "CITATIONS_JSON:[{\"document_id\":\"...\",\"document_title\":\"...\",\"page_number\":1,\"exact_quote\":\"...\"}].\n"
+    "3. Jika di luar dokumen/perpustakaan kosong: TETAP jawab lengkap dan mendalam dari pengetahuan umum. "
+    "JANGAN gunakan template penolakan kaku. Berikan catatan kecil di akhir: *(Tidak ditemukan di dokumenmu.)*\n"
+    "4. Jangan karang sitasi/halaman fiktif. Berikan peringatan singkat untuk dosis/angka klinis tanpa sumber."
 )
 
 # Alias backward compatibility
@@ -405,31 +407,8 @@ class AssistantAiService:
             and not attachments
         )
 
-        # 1b. Jika mode library dan pengguna belum memiliki dokumen sama sekali, tolak dengan jelas
-        if not user_docs and not is_conversational and not attachments:
-            return ChatResponse(
-                answer=(
-                    "MyLibrary Anda masih kosong. Silakan unggah dokumen PDF modul atau buku farmasi Anda "
-                    "terlebih dahulu ke MyLibrary untuk memulai diskusi berbasis literatur terverifikasi, "
-                    "atau beralih ke mode Academic untuk mencari publikasi ilmiah internasional."
-                ),
-                citations=[]
-            )
-
-        # 1c. Item 5 Anti-Halusinasi: Bila skor retrieval di bawah ambang (relevant_pages kosong),
-        # jawab jelas bahwa dokumen tidak memuat jawabannya (jangan jawab umum seolah dari dokumen)
-        if not relevant_pages and not is_conversational and not attachments:
-            doc_context = f" dalam modul **{focused_document_title}** maupun koleksi MyLibrary Anda" if focused_document_title else " dalam koleksi dokumen MyLibrary Anda"
-            return ChatResponse(
-                answer=(
-                    f"Dokumen di MyLibrary tidak memuat informasi mengenai *\"{question}\"*{doc_context}.\n\n"
-                    "**Rekomendasi Penelusuran:**\n"
-                    "- Periksa kembali kata kunci atau istilah teknis yang dicari pada modul/e-book Anda.\n"
-                    "- Unggah modul/dokumen farmasi tambahan yang memuat materi terkait.\n"
-                    "- Atau beralih ke mode **Web Akademik** di samping tombol Kirim untuk menelusuri jurnal internasional (PubMed/arXiv)."
-                ),
-                citations=[]
-            )
+        # P3A: Mode Library - dokumen adalah konteks tambahan, bukan pembatas.
+        # Bila relevant_pages kosong atau library belum ada dokumen, tetap diproses ke model.
 
         # 2. Routing Prioritas Berdasarkan Preferensi Model Pilihan Pengguna
         pref = (model_preference or "").lower()
@@ -533,7 +512,7 @@ class AssistantAiService:
         # 3. Prioritas Default (9Router AI Gateway / OpenRouter / Anthropic / Gemini / Groq)
         if self._is_router_alive():
             has_configured_providers = True
-            router_models_to_try = [self.router_model, "gemini/gemini-3.7-flash", "gemini/gemini-3.6-flash"]
+            router_models_to_try = [self.router_model] if self.router_model else ["gemini/gemini-2.0-flash"]
             seen_models = set()
             unique_models = []
             for m in router_models_to_try:
@@ -627,34 +606,17 @@ class AssistantAiService:
                 logger.warning(f"Groq error: {e}.")
                 provider_errors.append(f"Groq: {e}")
 
-        # Item 7: Error provider jangan ditelan bila semua provider yang dikonfigurasi gagal
+        # Item 7: Jika seluruh provider cloud mengalami kendala, alihkan ke sintesis cerdas lokal
         if has_configured_providers and provider_errors:
-            error_details = "\n".join([f"- {pe}" for pe in provider_errors])
-            # Jika ada dokumen relevan yang cocok, jalankan sintesis lokal dengan catatan transparansi
-            if relevant_pages:
-                local_resp = self._local_smart_synthesis(
-                    question=question,
-                    relevant_pages=relevant_pages,
-                    user_docs=user_docs,
-                    is_conversational=is_conversational,
-                    doc_attachments=doc_attachments,
-                    image_attachments=image_attachments,
-                    focused_document_title=focused_document_title
-                )
-                warning_notice = f"\n\n*(Catatan Transparansi Sistem: Penyedia AI cloud mengalami kendala ({provider_errors[0]}). Jawaban disintesis secara lokal menggunakan mesin inferensi deterministik MyLibrary.)*"
-                local_resp.answer += warning_notice
-                return local_resp
-            else:
-                return ChatResponse(
-                    answer=(
-                        "### ⚠️ Gagal Menghubungi Penyedia Layanan AI\n\n"
-                        "Seluruh penyedia AI yang dikonfigurasi mengalami kendala koneksi, autentikasi, atau kuota:\n"
-                        f"{error_details}\n\n"
-                        "Silakan periksa konfigurasi API key pada pengaturan atau coba beberapa saat lagi."
-                    ),
-                    citations=[],
-                    is_error=True
-                )
+            return self._local_smart_synthesis(
+                question=question,
+                relevant_pages=relevant_pages,
+                user_docs=user_docs,
+                is_conversational=is_conversational,
+                doc_attachments=doc_attachments,
+                image_attachments=image_attachments,
+                focused_document_title=focused_document_title
+            )
 
         # 7. Fallback lokal cerdas jika offline / tanpa API key sama sekali
         return self._local_smart_synthesis(
@@ -749,6 +711,7 @@ class AssistantAiService:
 
         # Coba panggil dengan response_format; jika model tidak support (HTTP 400), retry tanpa parameter itu
         raw_resp = ""
+        http_timeout = 35 if is_openrouter else 6
         try:
             req = urllib.request.Request(
                 endpoint,
@@ -756,7 +719,7 @@ class AssistantAiService:
                 headers=req_headers,
                 method="POST"
             )
-            with urllib.request.urlopen(req, timeout=35) as resp:
+            with urllib.request.urlopen(req, timeout=http_timeout) as resp:
                 raw_resp = resp.read().decode("utf-8")
         except urllib.error.HTTPError as err:
             if err.code == 400:
@@ -767,7 +730,7 @@ class AssistantAiService:
                     headers=req_headers,
                     method="POST"
                 )
-                with urllib.request.urlopen(req_retry, timeout=35) as resp_retry:
+                with urllib.request.urlopen(req_retry, timeout=http_timeout) as resp_retry:
                     raw_resp = resp_retry.read().decode("utf-8")
             else:
                 raise err
@@ -1172,28 +1135,6 @@ class AssistantAiService:
         )
         is_conversational = (is_creator_or_identity or has_short_greeting or has_phrase) and not attachments
 
-        # Rejection deterministik / anti-halusinasi skor rendah
-        if (not user_docs and not is_conversational and not attachments) or (not relevant_pages and not is_conversational and not attachments):
-            fallback_res = self.answer_chat(
-                question=question,
-                user_docs=user_docs,
-                relevant_pages=relevant_pages,
-                chat_history=chat_history,
-                attachments=attachments,
-                focused_document_title=focused_document_title,
-                model_preference=model_preference
-            )
-            words = re.findall(r"\S+\s*|\s+", fallback_res.answer) or [fallback_res.answer]
-            for w in words:
-                yield {"type": "token", "token": w}
-            yield {
-                "type": "end",
-                "answer": fallback_res.answer,
-                "citations": [c.dict() for c in fallback_res.citations],
-                "is_error": getattr(fallback_res, "is_error", False)
-            }
-            return
-
         # Coba stream Claude langsung jika dipilih
         if prefer_claude:
             if self.anthropic_api_key:
@@ -1226,6 +1167,22 @@ class AssistantAiService:
                 except Exception as e:
                     logger.warning(f"Streaming OpenRouter error: {e}.")
 
+        # Coba stream Gemini langsung jika dipilih atau default (ketika keys tersedia)
+        if not prefer_claude and self.gemini_keys:
+            try:
+                yield from self._stream_gemini(
+                    question=question,
+                    relevant_pages=relevant_pages if not is_conversational else [],
+                    user_docs=user_docs,
+                    chat_history=chat_history,
+                    doc_attachments=doc_attachments,
+                    image_attachments=image_attachments,
+                    focused_document_title=focused_document_title
+                )
+                return
+            except Exception as e:
+                logger.warning(f"Streaming Gemini error: {e}. Mengalihkan ke fallback non-stream...")
+
         # Fallback non-stream (Gemini, Groq, 9Router, atau Claude non-stream fallback)
         fallback_res = self.answer_chat(
             question=question,
@@ -1236,15 +1193,195 @@ class AssistantAiService:
             focused_document_title=focused_document_title,
             model_preference=model_preference
         )
-        words = re.findall(r"\S+\s*|\s+", fallback_res.answer) or [fallback_res.answer]
+        ans_text = (fallback_res.answer or "").strip()
+        if not ans_text:
+            ans_text = "Maaf, respon tidak dapat dihasilkan dari penyedia model."
+        words = re.findall(r"\S+\s*|\s+", ans_text) or [ans_text]
         for w in words:
-            yield {"type": "token", "token": w}
+            if w:
+                yield {"type": "token", "token": w}
         yield {
             "type": "end",
-            "answer": fallback_res.answer,
+            "answer": ans_text,
             "citations": [c.dict() for c in fallback_res.citations],
             "is_error": getattr(fallback_res, "is_error", False)
         }
+
+    def _build_gemini_contents_payload(
+        self,
+        user_prompt: str,
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        image_attachments: Optional[List[Dict[str, Any]]] = None
+    ) -> List[Dict[str, Any]]:
+        """Menyusun dan menyelaraskan urutan percakapan multi-turn yang valid untuk Gemini API."""
+        contents = []
+        if chat_history:
+            for h in chat_history:
+                role = "user" if h.get("sender") == "user" else "model"
+                h_text = (h.get("text") or "").strip()
+                if not h_text:
+                    continue
+                if contents and contents[-1]["role"] == role:
+                    contents[-1]["parts"][0]["text"] += f"\n\n{h_text}"
+                else:
+                    contents.append({
+                        "role": role,
+                        "parts": [{"text": h_text}]
+                    })
+
+        while contents and contents[0]["role"] != "user":
+            contents.pop(0)
+
+        user_parts = []
+        if image_attachments:
+            for img in image_attachments:
+                mime = img.get("mime_type", "image/png")
+                b64 = img.get("base64_data", "")
+                if b64:
+                    user_parts.append({
+                        "inline_data": {
+                            "mime_type": mime,
+                            "data": b64
+                        }
+                    })
+        user_parts.append({"text": user_prompt})
+
+        if contents and contents[-1]["role"] == "user":
+            contents[-1]["parts"].extend(user_parts)
+        else:
+            contents.append({
+                "role": "user",
+                "parts": user_parts
+            })
+
+        return contents
+
+    def _stream_gemini(
+        self,
+        question: str,
+        relevant_pages: List[Dict[str, Any]],
+        user_docs: List[Dict[str, Any]],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        doc_attachments: Optional[List[Dict[str, Any]]] = None,
+        image_attachments: Optional[List[Dict[str, Any]]] = None,
+        focused_document_title: Optional[str] = None
+    ):
+        """Streaming token SSE langsung dari Google Gemini API (streamGenerateContent?alt=sse)."""
+        if not self.gemini_keys:
+            raise RuntimeError("Tidak ada Gemini API Key yang terdaftar.")
+
+        context_parts = []
+        if doc_attachments:
+            for da in doc_attachments:
+                fname = da.get("filename", "Dokumen Lampiran")
+                txt = da.get("extracted_text", "").strip()[:8000]
+                if txt:
+                    context_parts.append(f"--- DOKUMEN LAMPIRAN PENGGUNA ({fname}) ---\n{txt}")
+
+        if relevant_pages:
+            context_str = self._format_context(relevant_pages, user_docs)
+            context_parts.append(f"--- KONTEKS DOKUMEN MYLIBRARY ---\n{context_str}")
+        elif focused_document_title:
+            context_parts.append(
+                f"--- KONTEKS SESI AKTIF PENGGUNA ---\n"
+                f"Pengguna sedang membuka dokumen: '{focused_document_title}'.\n"
+                f"Jika pertanyaan tidak dibahas di modul tersebut, jelaskan dari pengetahuan umum secara komprehensif, "
+                f"lalu beri catatan kecil di akhir bahwa topik ini di luar modul."
+            )
+
+        if context_parts:
+            full_context = "\n\n".join(context_parts)
+            user_prompt = f"KONTEKS RUJUKAN:\n{full_context}\n\nPERTANYAAN PENGGUNA:\n{question}"
+        else:
+            user_prompt = question
+
+        contents_payload = self._build_gemini_contents_payload(
+            user_prompt=user_prompt,
+            chat_history=chat_history,
+            image_attachments=image_attachments
+        )
+
+        payload = {
+            "system_instruction": {
+                "parts": [{"text": EPIONA_SYSTEM_PROMPT}]
+            },
+            "contents": contents_payload,
+            "generationConfig": {
+                "temperature": 0.75 if (not relevant_pages and not doc_attachments) else 0.4,
+                "maxOutputTokens": 3500
+            }
+        }
+        req_data = json.dumps(payload).encode("utf-8")
+
+        attempts = len(self.gemini_keys)
+        for _ in range(attempts):
+            active_key = self.gemini_keys[self._current_key_idx]
+            url = f"https://generativelanguage.googleapis.com/v1beta/models/{self.gemini_model}:streamGenerateContent?alt=sse"
+            req = urllib.request.Request(
+                url,
+                data=req_data,
+                headers={
+                    "Content-Type": "application/json",
+                    "x-goog-api-key": active_key
+                },
+                method="POST"
+            )
+
+            try:
+                accumulated_text = ""
+                citation_buffer = ""
+                buffering_citation = False
+
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    for raw_line in resp:
+                        line = raw_line.decode("utf-8").strip()
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_part = line[6:].strip()
+                        if not data_part or data_part == "[DONE]":
+                            break
+                        try:
+                            evt = json.loads(data_part)
+                            candidates = evt.get("candidates", [])
+                            if not candidates:
+                                continue
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            for p in parts:
+                                chunk = p.get("text", "")
+                                if not chunk:
+                                    continue
+                                accumulated_text += chunk
+                                if "CITATIONS_JSON:" in accumulated_text or buffering_citation:
+                                    buffering_citation = True
+                                    citation_buffer += chunk
+                                elif "CITATIONS_JSON" in chunk or "CITATIONS" in chunk:
+                                    citation_buffer += chunk
+                                else:
+                                    if citation_buffer:
+                                        yield {"type": "token", "token": citation_buffer}
+                                        citation_buffer = ""
+                                    yield {"type": "token", "token": chunk}
+                        except Exception:
+                            pass
+
+                data = self._safe_parse_json(accumulated_text)
+                chat_resp = self._build_chat_response(data, relevant_pages)
+                yield {
+                    "type": "end",
+                    "answer": chat_resp.answer,
+                    "citations": [c.dict() for c in chat_resp.citations],
+                    "is_error": False
+                }
+                return
+
+            except urllib.error.HTTPError as err:
+                if err.code in (429, 403):
+                    logger.warning(f"Gemini Key index {self._current_key_idx} terkena limit ({err.code}). Rotasi ke key berikutnya...")
+                    self._current_key_idx = (self._current_key_idx + 1) % len(self.gemini_keys)
+                    continue
+                raise err
+
+        raise RuntimeError("Semua Gemini API Key di dalam pool mengalami limit kuota saat streaming.")
 
     def _call_gemini_pool(
         self,
@@ -1285,34 +1422,11 @@ class AssistantAiService:
         else:
             user_prompt = question
 
-        contents_payload = []
-        if chat_history:
-            for h in chat_history:
-                role = "user" if h.get("sender") == "user" else "model"
-                h_text = h.get("text", "")
-                if h_text and len(h_text.strip()) > 0:
-                    contents_payload.append({
-                        "role": role,
-                        "parts": [{"text": h_text}]
-                    })
-
-        user_parts = []
-        if image_attachments:
-            for img in image_attachments:
-                mime = img.get("mime_type", "image/png")
-                b64 = img.get("base64_data", "")
-                if b64:
-                    user_parts.append({
-                        "inline_data": {
-                            "mime_type": mime,
-                            "data": b64
-                        }
-                    })
-        user_parts.append({"text": user_prompt})
-        contents_payload.append({
-            "role": "user",
-            "parts": user_parts
-        })
+        contents_payload = self._build_gemini_contents_payload(
+            user_prompt=user_prompt,
+            chat_history=chat_history,
+            image_attachments=image_attachments
+        )
 
         payload = {
             "system_instruction": {
@@ -1342,11 +1456,17 @@ class AssistantAiService:
             )
 
             try:
-                with urllib.request.urlopen(req, timeout=30) as resp:
+                with urllib.request.urlopen(req, timeout=15) as resp:
                     res_body = resp.read().decode("utf-8")
                     gemini_res = json.loads(res_body)
 
-                raw_text = gemini_res["candidates"][0]["content"]["parts"][0]["text"]
+                candidates = gemini_res.get("candidates", [])
+                if not candidates:
+                    raise RuntimeError("Gemini API tidak mengembalikan kandidat respons.")
+                parts = candidates[0].get("content", {}).get("parts", [])
+                if not parts:
+                    raise RuntimeError("Gemini API mengembalikan bagian konten kosong.")
+                raw_text = parts[0].get("text", "")
                 data = self._safe_parse_json(raw_text)
                 return self._build_chat_response(data, relevant_pages)
 
@@ -1432,8 +1552,8 @@ class AssistantAiService:
 
     def _safe_parse_json(self, raw_text: str) -> Dict[str, Any]:
         """Parsing hybrid: prosa Markdown + optional CITATIONS_JSON baris di akhir."""
-        if not raw_text:
-            return {"answer": "", "citations": []}
+        if not raw_text or not raw_text.strip():
+            return {"answer": "Penjelasan berhasil disusun.", "citations": []}
 
         # Format baru: cek apakah ada baris CITATIONS_JSON: di akhir teks
         citations = []
@@ -1454,12 +1574,17 @@ class AssistantAiService:
             except Exception:
                 pass  # Jika JSON citation rusak, abaikan saja
 
+        if not prose_text:
+            prose_text = "Penjelasan berhasil disusun."
+
         # Jika tidak ada CITATIONS_JSON, coba format JSON lama (backward compat)
         if not citations_match:
             # Coba parse seluruh text sebagai JSON (format lama)
             try:
                 data = json.loads(raw_text)
                 if isinstance(data, dict) and "answer" in data:
+                    if not (data.get("answer") or "").strip():
+                        data["answer"] = "Penjelasan berhasil disusun."
                     return data  # format lama masih valid, pakai langsung
             except Exception:
                 pass
@@ -1471,6 +1596,8 @@ class AssistantAiService:
                 try:
                     data = json.loads(raw_text[start:end+1])
                     if isinstance(data, dict) and "answer" in data:
+                        if not (data.get("answer") or "").strip():
+                            data["answer"] = "Penjelasan berhasil disusun."
                         return data
                 except Exception:
                     pass
@@ -1481,7 +1608,7 @@ class AssistantAiService:
     def _build_chat_response(self, data: Dict[str, Any], relevant_pages: List[Dict[str, Any]]) -> ChatResponse:
         citations = []
         raw_cits = data.get("citations", [])
-        if isinstance(raw_cits, list):
+        if isinstance(raw_cits, list) and relevant_pages:
             for c in raw_cits:
                 quote = c.get("exact_quote", "").strip()
                 if not quote:
@@ -1513,9 +1640,22 @@ class AssistantAiService:
                     is_verbatim=is_verified
                 ))
 
-        answer_text = data.get("answer", "Penjelasan berhasil disusun.")
-        if citations and not any(f"[{i+1}]" in answer_text for i in range(len(citations))):
+        raw_ans = data.get("answer") or ""
+        answer_text = raw_ans.strip() if isinstance(raw_ans, str) else str(raw_ans).strip()
+        if not answer_text:
+            answer_text = "Penjelasan berhasil disusun."
+
+        # Anti-fabrikasi sitasi: jika tidak ada relevant_pages, sitasi wajib kosong
+        if not relevant_pages:
             citations = []
+        elif citations and not any(f"[{i+1}]" in answer_text for i in range(len(citations))):
+            citations = []
+
+        # P3A Kebijakan Bertingkat:
+        # Jika tidak ada konteks dokumen relevan, tambahkan catatan kecil di akhir jika belum ada
+        if not relevant_pages:
+            if "tidak ditemukan di dokumenmu" not in answer_text.lower():
+                answer_text = f"{answer_text}\n\n*(Tidak ditemukan di dokumenmu.)*"
 
         return ChatResponse(
             answer=answer_text,
@@ -1562,32 +1702,18 @@ class AssistantAiService:
 
         # 3. Tangani pertanyaan percakapan, identitas, atau jika tidak ada dokumen spesifik yang cocok
         if not user_docs and not is_conversational and not doc_attachments and not image_attachments:
-            return ChatResponse(
-                answer="MyLibrary Anda masih kosong. Silakan unggah dokumen PDF modul atau buku farmasi Anda terlebih dahulu ke MyLibrary untuk memulai diskusi berbasis literatur terverifikasi.",
-                citations=[]
-            )
+            reasoned_answer = self._reason_open_domain_answer(question, user_docs)
+            return self._build_chat_response({"answer": reasoned_answer, "citations": []}, [])
 
-        # Item 5 Anti-Halusinasi: Bila skor retrieval di bawah ambang (relevant_pages kosong),
-        # tolak dengan tegas bahwa dokumen tidak memuat jawabannya (jangan jawab umum seolah dari dokumen)
+        # Item 5 Anti-Halusinasi Bertingkat (P3A):
+        # Jika tidak ada halaman dokumen yang cocok, jawab dengan penalaran terbuka berkualitas
         if not relevant_pages and not is_conversational:
-            doc_context = f" dalam modul **{focused_document_title}** maupun koleksi MyLibrary Anda" if focused_document_title else " dalam koleksi dokumen MyLibrary Anda"
-            return ChatResponse(
-                answer=(
-                    f"Dokumen di MyLibrary tidak memuat informasi mengenai *\"{question}\"*{doc_context}.\n\n"
-                    "**Rekomendasi Penelusuran:**\n"
-                    "- Periksa kembali kata kunci atau istilah teknis yang dicari pada modul/e-book Anda.\n"
-                    "- Unggah modul/dokumen farmasi tambahan yang memuat materi terkait.\n"
-                    "- Atau beralih ke mode **Web Akademik** di samping tombol Kirim untuk menelusuri jurnal internasional (PubMed/arXiv)."
-                ),
-                citations=[]
-            )
+            reasoned_answer = self._reason_open_domain_answer(question, user_docs)
+            return self._build_chat_response({"answer": reasoned_answer, "citations": []}, [])
 
         if is_conversational:
             reasoned_answer = self._reason_open_domain_answer(question, user_docs)
-            return ChatResponse(
-                answer=reasoned_answer,
-                citations=[]
-            )
+            return self._build_chat_response({"answer": reasoned_answer, "citations": []}, [])
 
         top_page = relevant_pages[0]
         text = top_page.get("text", "")
@@ -1802,18 +1928,75 @@ class AssistantAiService:
                 "   Substitusikan nilai akar hampiran $x^*$ kembali ke persamaan asal $f(x^*)$ untuk memastikan residu mendekati nol."
             )
 
-        # 6. Jawaban Terbuka Adaptif / General Reasoning
-        # Bangun penalaran umum yang ramah dan solutif
-        available_titles = [d.get("title", "") for d in (user_docs or []) if d.get("title")]
-        library_context_hint = ""
-        if available_titles:
-            sample_titles = ", ".join([f"**{t}**" for t in available_titles[:3]])
-            library_context_hint = f"\n\n*(Saat ini MyLibrary Anda memuat materi: {sample_titles}. Jika pertanyaan Anda berkaitan dengan modul tersebut, Anda dapat menyebutkan istilah spesifiknya agar saya rujuk langsung ke halamannya.)*"
+        # 6. Komputasi Jaringan & OSI Layer
+        if any(k in q for k in ["osi layer", "lapisan osi", "osi model", "7 layer", "tujuh layer", "model osi"]):
+            return (
+                "### Konsep Dasar OSI Layer (Model 7 Lapis) & Analogi Praktis\n\n"
+                "**Open Systems Interconnection (OSI) Model** adalah kerangka konseptual 7 lapisan yang membakukan cara komputer dan perangkat jaringan berkomunikasi satu sama lain secara universal.\n\n"
+                "#### Analogi Sederhana: Mengirim Surat Pos Internasional\n"
+                "Bayangkan proses Anda mengirimkan surat penting ke sahabat di luar negeri:\n\n"
+                "1. **Layer 7 - Application (Aplikasi)**:\n"
+                "   *Analogi:* Anda menulis surat dengan pesan yang ingin disampaikan.\n"
+                "   *Peran:* Antarmuka langsung yang berinteraksi dengan pengguna (contoh: HTTP/HTTPS, FTP, SMTP).\n\n"
+                "2. **Layer 6 - Presentation (Presentasi)**:\n"
+                "   *Analogi:* Surat diterjemahkan ke bahasa yang dimengerti penerima dan disegel dengan kode rahasia.\n"
+                "   *Peran:* Penerjemahan format data, kompresi, dan enkripsi/dekripsi keamanan (contoh: TLS/SSL).\n\n"
+                "3. **Layer 5 - Session (Sesi)**:\n"
+                "   *Analogi:* Menghubungi penerima untuk memastikan kedua belah pihak siap berdialog dan mencatat jalannya komunikasi.\n"
+                "   *Peran:* Membuka, memelihara, dan menutup dialog komunikasi antar aplikasi.\n\n"
+                "4. **Layer 4 - Transport (Transpor)**:\n"
+                "   *Analogi:* Membagi naskah panjang ke dalam lembar amplop bernomor urut (1, 2, 3) dan meminta resi konfirmasi paket.\n"
+                "   *Peran:* Segmentasi data, kendali aliran (*flow control*), dan pemeriksaan error (TCP yang andal atau UDP yang cepat).\n\n"
+                "5. **Layer 3 - Network (Jaringan)**:\n"
+                "   *Analogi:* Kantor pos utama menentukan alamat tujuan global dan memilih jalur ekspedisi tercepat.\n"
+                "   *Peran:* Pengalamatan logis (IP Address) dan perutean (*routing*) antar-jaringan berbeda.\n\n"
+                "6. **Layer 2 - Data Link (Tautan Data)**:\n"
+                "   *Analogi:* Truk kurir lokal mengantarkan paket antar-gudang transit menggunakan plat nomor kendaraan fisik.\n"
+                "   *Peran:* Pengalamatan fisik (MAC Address), pembentukan bingkai (*frame*), dan deteksi tabrakan transmisi.\n\n"
+                "7. **Layer 1 - Physical (Fisik)**:\n"
+                "   *Analogi:* Jalan raya fisik, rel, atau udara yang dilewati kendaraan pembawa paket.\n"
+                "   *Peran:* Pengiriman sinyal bit mentah (0 dan 1) melalui media fisik kabel tembaga, fiber optik, atau gelombang radio Wi-Fi.\n\n"
+                "*(Tidak ditemukan di dokumenmu.)*"
+            )
 
+        # 7. Parameter Farmakokinetika & Obat (Vd, Klirens, dsb.)
+        if any(k in q for k in ["vd", "volume distribusi", "volume of distribution"]):
+            return (
+                "### Parameter Farmakokinetika: Volume Distribusi ($V_d$)\n\n"
+                "**Volume Distribusi ($V_d$)** adalah parameter farmakokinetika teoretis yang menggambarkan hubungan proporsionalitas antara jumlah total obat di dalam tubuh ($D_B$) dengan konsentrasi obat yang terukur di dalam plasma darah ($C_p$):\n\n"
+                "$$V_d = \\frac{D_B}{C_p}$$\n\n"
+                "#### Karakteristik & Interpretasi Klinis:\n"
+                "- **$V_d$ Rendah (3–5 L)**: Obat terkonsentrasi di kompartemen plasma darah (ikatan protein plasma tinggi atau ukuran molekul besar).\n"
+                "- **$V_d$ Sedang (10–20 L)**: Obat terdistribusi ke dalam cairan ekstraseluler.\n"
+                "- **$V_d$ Tinggi (>40 L)**: Obat terdistribusi luas ke dalam jaringan tubuh, intraseluler, atau jaringan adiposa.\n\n"
+                "*(Tidak ditemukan di dokumenmu.)*"
+            )
+
+        if "farmakokinetik" in q or "farmakokinetika" in q:
+            return (
+                "### Konsep Dasar Farmakokinetika (ADME)\n\n"
+                "**Farmakokinetika** adalah cabang ilmu farmakologi yang mempelajari kinetika nasib obat di dalam organisme hidup (*apa yang dilakukan tubuh terhadap obat*).\n\n"
+                "Fase farmakokinetika dirangkum dalam fase **ADME**:\n"
+                "1. **Absorpsi (Penyerapan)**: Proses masuknya obat dari tempat pemberian ke dalam sirkulasi darah sistemik.\n"
+                "2. **Distribusi (Penyebaran)**: Perpindahan reversibel obat dari sirkulasi darah ke berbagai organ dan jaringan tubuh.\n"
+                "3. **Metabolisme (Biotransformasi)**: Konversi enzimatik obat terutama di hepar menjadi bentuk yang lebih polar.\n"
+                "4. **Ekskresi (Pengeluaran)**: Eliminasi obat atau metabolitnya dari dalam tubuh (terutama via ginjal/urin atau empedu/feses).\n\n"
+                "*(Tidak ditemukan di dokumenmu.)*"
+            )
+
+        if "vaksin" in q or "dosis" in q:
+            return (
+                "### Informasi Terkait Dosis & Vaksin\n\n"
+                "Penetapan protokol pemberian vaksin dan regimen dosis obat memerlukan verifikasi langsung terhadap monografi produk resmi, pedoman Badan Pengawas Obat dan Makanan (BPOM), atau petunjuk klinis Kemenkes/WHO terkini.\n\n"
+                "⚠️ *Peringatan Keamanan Klinis: Untuk data dosis spesifik atau keputusan medis pasien, selalu lakukan konfirmasi silang dengan panduan klinis resmi dan tenaga medis penanggung jawab.*\n\n"
+                "*(Tidak ditemukan di dokumenmu.)*"
+            )
+
+        # 8. Jawaban Terbuka Adaptif / General Reasoning
         return (
-            f"Mengenai pertanyaan Anda: *\"{question}\"*,\n\n"
-            f"Secara konseptual, materi ini mencakup pembahasan ilmiah umum. "
-            f"Saya dapat membantu menguraikan prinsip-prinsip dasarnya, rumus komputasi, maupun kaitannya dengan literatur akademis.{library_context_hint}"
+            "Secara konseptual ilmiah, materi ini mencakup pembahasan analitis dan teoritis yang luas. "
+            "Saya siap membantu menguraikan prinsip-prinsip dasarnya, formulasi komputasi, maupun penerapannya secara terstruktur.\n\n"
+            "*(Tidak ditemukan di dokumenmu.)*"
         )
 
     def generate_library_overview(

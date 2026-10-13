@@ -162,7 +162,7 @@ class TestP1Features(unittest.TestCase):
     # ITEM 5: ANTI-HALUSINASI & PENGHAPUSAN AFINITAS JUDUL
     # -------------------------------------------------------------
     def test_anti_hallucination_rejects_out_of_context(self):
-        """Item 5: Jika pertanyaan tidak ada di dokumen (skor di bawah ambang), sistem menolak jelas tanpa mengarang."""
+        """Item 5: Jika pertanyaan tidak ada di dokumen (skor di bawah ambang), sistem menjawab dengan catatan tanpa mengarang sitasi."""
         svc = AssistantAiService()
         user_docs = [{"id": "d1", "title": "Modul Farmakologi"}]
         # relevant_pages kosong karena skor retrieval di bawah ambang
@@ -171,18 +171,18 @@ class TestP1Features(unittest.TestCase):
             user_docs=user_docs,
             relevant_pages=[]
         )
-        self.assertIn("Dokumen di MyLibrary tidak memuat informasi", resp.answer)
+        self.assertIn("Tidak ditemukan di dokumenmu", resp.answer)
         self.assertEqual(len(resp.citations), 0)
 
     def test_anti_hallucination_empty_library_message(self):
-        """Item 5: Library kosong memberikan pesan panduan yang jelas."""
+        """Item 5: Library kosong dijawab dari pengetahuan umum dengan catatan tanpa template kaku."""
         svc = AssistantAiService()
         resp = svc.answer_chat(
             question="Apa itu farmakokinetika?",
             user_docs=[],
             relevant_pages=[]
         )
-        self.assertIn("MyLibrary Anda masih kosong", resp.answer)
+        self.assertIn("Tidak ditemukan di dokumenmu", resp.answer)
         self.assertEqual(len(resp.citations), 0)
 
     # -------------------------------------------------------------

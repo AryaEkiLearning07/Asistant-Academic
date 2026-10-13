@@ -276,7 +276,12 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
           }`}
         >
           <div className="leading-relaxed selection:bg-teal-500/20">
-            <ReactMarkdown
+            {!m.text?.trim() && !isTypingStream ? (
+              <div className="flex items-center gap-2 p-3 my-1 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400 text-xs">
+                <span>Maaf, respon tidak dapat dimuat atau terjadi gangguan koneksi ke model AI. Silakan coba kirim ulang pertanyaan Anda.</span>
+              </div>
+            ) : (
+              <ReactMarkdown
               remarkPlugins={[remarkGfm, remarkMath]}
               rehypePlugins={[rehypeKatex]}
               components={{
@@ -518,6 +523,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
             >
               {formatInlineCitations(preprocessLatex(injectFiguresIntoContent(m.text, m.figures)))}
             </ReactMarkdown>
+            )}
             {isTypingStream && streamingMsgId === m.id && (
               <span
                 className={`inline-block w-1.5 h-4 ml-1 rounded-xs animate-pulse align-middle ${
@@ -531,11 +537,16 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
           <div className="flex items-center justify-between w-full mt-3 pt-1 text-xs select-none">
             <button
               type="button"
+              disabled={!m.text?.trim()}
               onClick={() => handleCopyMessage(m.id, m.text)}
-              className={`p-1 rounded-md transition cursor-pointer hover:scale-105 flex items-center gap-1.5 ${
-                theme === "dark" ? "hover:text-[#34D3BE] text-[#9AA9B5]" : "hover:text-[#0F766E] text-zinc-500"
+              className={`p-1 rounded-md transition flex items-center gap-1.5 ${
+                !m.text?.trim()
+                  ? "opacity-40 cursor-not-allowed"
+                  : theme === "dark"
+                  ? "hover:text-[#34D3BE] text-[#9AA9B5] cursor-pointer hover:scale-105"
+                  : "hover:text-[#0F766E] text-zinc-500 cursor-pointer hover:scale-105"
               }`}
-              title="Salin respon asisten"
+              title={m.text?.trim() ? "Salin respon asisten" : "Tidak ada teks untuk disalin"}
             >
               {copiedMessageId === m.id ? (
                 <>

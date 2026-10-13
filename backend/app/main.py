@@ -777,7 +777,7 @@ def ask_assistant_stream(
     if request.session_id:
         try:
             prev_msgs = storage_mgr.get_chat_messages(request.session_id)
-            chat_history = prev_msgs[-4:] if prev_msgs else []
+            chat_history = prev_msgs[-10:] if prev_msgs else []
         except Exception:
             chat_history = []
 
@@ -797,12 +797,16 @@ def ask_assistant_stream(
             ):
                 if chunk.get("type") == "token":
                     t_val = chunk.get("token", "")
-                    accumulated_answer += t_val
-                    yield f"data: {json.dumps({'type': 'token', 'token': t_val})}\n\n"
+                    if t_val:
+                        accumulated_answer += t_val
+                        yield f"data: {json.dumps({'type': 'token', 'token': t_val})}\n\n"
                 elif chunk.get("type") == "end":
                     final_citations = chunk.get("citations", [])
                     is_error = chunk.get("is_error", False)
-                    full_answer = chunk.get("answer", accumulated_answer)
+                    raw_end_ans = chunk.get("answer") or ""
+                    full_answer = raw_end_ans.strip() if raw_end_ans.strip() else accumulated_answer.strip()
+                    if not full_answer:
+                        full_answer = "Maaf, respon tidak dapat dihasilkan."
 
                     smart_title = None
                     if request.session_id:
@@ -841,7 +845,8 @@ def ask_assistant_stream(
                     }
                     yield f"data: {json.dumps(end_payload)}\n\n"
         except Exception as e:
-            err_payload = {"type": "error", "detail": str(e)}
+            err_msg = f"Terjadi kesalahan saat streaming asisten: {str(e)}"
+            err_payload = {"type": "error", "detail": err_msg}
             yield f"data: {json.dumps(err_payload)}\n\n"
 
     return StreamingResponse(
@@ -1096,7 +1101,7 @@ def ask_assistant(
             if request.session_id:
                 try:
                     prev_msgs = storage_mgr.get_chat_messages(request.session_id)
-                    chat_history = prev_msgs[-4:] if prev_msgs else []
+                    chat_history = prev_msgs[-10:] if prev_msgs else []
                 except Exception:
                     chat_history = []
 
