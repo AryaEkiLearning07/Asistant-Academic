@@ -1,13 +1,28 @@
+import time
 import uuid
 import re
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, List
+import jwt
 from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, Form, Header, Query, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
-from app.config import PDFS_DIR, FIGURES_DIR, THUMBNAILS_DIR, PAGES_DIR
+from app.config import (
+    PDFS_DIR,
+    FIGURES_DIR,
+    THUMBNAILS_DIR,
+    PAGES_DIR,
+    JWT_SECRET,
+    JWT_ALGORITHM,
+    JWT_EXPIRATION_HOURS,
+    ADMIN_EMAIL,
+    MAX_UPLOAD_MB,
+    WEB_MODE_RATE_LIMIT_PER_MINUTE,
+    MAX_WEB_QUOTA_PER_DAY
+)
 from app.models import (
     RegisterRequest,
     LoginRequest,
@@ -17,9 +32,17 @@ from app.models import (
     ChatRequest,
     ChatResponse,
     FigureSnippet,
-    CreateSessionRequest
+    CreateSessionRequest,
+    UserQuotaResponse,
+    SubscriptionPlanRequest
 )
-from app.storage import LocalStorageManager, compute_sha256, verify_password
+from app.storage import (
+    LocalStorageManager,
+    compute_sha256,
+    verify_password,
+    hash_password,
+    needs_password_rehash
+)
 from app.parser import PdfDocumentParser
 from app.indexer import DocumentSearchIndex
 from app.ai_service import AssistantAiService
@@ -44,27 +67,90 @@ app.add_middleware(
 storage_mgr = LocalStorageManager()
 ai_service = AssistantAiService()
 
+def create_access_token(user: dict, expires_delta: Optional[timedelta] = None) -> str:
+    now = datetime.now(timezone.utc)
+    delta = expires_delta or timedelta(hours=JWT_EXPIRATION_HOURS)
+    expire = now + delta
+    payload = {
+        "sub": str(user["id"]),
+        "email": str(user["email"]),
+        "role": str(user.get("role", "user")),
+        "iat": int(now.timestamp()),
+        "exp": int(expire.timestamp())
+    }
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
+
+def decode_access_token(token_str: str) -> dict:
+    return jwt.decode(token_str, JWT_SECRET, algorithms=[JWT_ALGORITHM])
+
+# --- RATE LIMITER & KUOTA WEB MODE PER USER ---
+_user_web_mode_timestamps: Dict[str, List[float]] = {}
+_user_web_mode_daily: Dict[str, Dict[str, int]] = {}
+
+def check_web_mode_rate_limit(user_id: str) -> None:
+    now = time.time()
+    today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    daily_record = _user_web_mode_daily.setdefault(user_id, {"date": today_str, "count": 0})
+    if daily_record.get("date") != today_str:
+        daily_record["date"] = today_str
+        daily_record["count"] = 0
+
+    if daily_record["count"] >= MAX_WEB_QUOTA_PER_DAY:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Batas kuota harian mode web ({MAX_WEB_QUOTA_PER_DAY} kueri/hari) telah habis. Silakan coba lagi besok."
+        )
+
+    user_times = _user_web_mode_timestamps.setdefault(user_id, [])
+    active_times = [t for t in user_times if now - t < 60]
+    _user_web_mode_timestamps[user_id] = active_times
+    if len(active_times) >= WEB_MODE_RATE_LIMIT_PER_MINUTE:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Batas penggunaan mode web terlampaui (maksimal {WEB_MODE_RATE_LIMIT_PER_MINUTE} kali per menit). Silakan tunggu beberapa saat."
+        )
+    _user_web_mode_timestamps[user_id].append(now)
+    daily_record["count"] += 1
+
 # --- AUTH DEPENDENCY ---
 def get_current_user(
     x_user_id: Optional[str] = Header(None, alias="X-User-Id"),
     authorization: Optional[str] = Header(None),
     token: Optional[str] = Query(None)
 ):
-    """Mengambil user aktif dari header X-User-Id, Bearer token, atau Query parameter token."""
-    user_id = x_user_id or token
-    if not user_id and authorization and authorization.startswith("Bearer "):
-        user_id = authorization.replace("Bearer ", "").strip()
+    """Mengambil user aktif dari signed JWT token di header Authorization Bearer, X-User-Id, atau Query parameter token."""
+    token_str = None
+    if authorization and authorization.startswith("Bearer "):
+        token_str = authorization[7:].strip()
+    elif authorization:
+        token_str = authorization.strip()
+    elif x_user_id:
+        token_str = x_user_id.strip()
+    elif token:
+        token_str = token.strip()
 
-    if not user_id:
-        # Fallback guest untuk pengujian tanpa login
-        default_guest = storage_mgr.get_user_by_email("guest@epiona.ac.id")
-        if not default_guest:
-            default_guest = storage_mgr.create_user("guest@epiona.ac.id", "guest123", "Tamu Mahasiswa Farmasi")
-        return default_guest
+    if not token_str:
+        raise HTTPException(
+            status_code=401,
+            detail="Autentikasi diperlukan. Silakan login terlebih dahulu.",
+            headers={"WWW-Authenticate": "Bearer"}
+        )
+
+    try:
+        payload = decode_access_token(token_str)
+        user_id = payload.get("sub")
+        if not user_id:
+            raise HTTPException(status_code=401, detail="Token tidak valid: ID pengguna tidak ditemukan.")
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Sesi autentikasi telah kedaluwarsa. Silakan login kembali.")
+    except Exception:
+        raise HTTPException(status_code=401, detail="Token autentikasi tidak valid atau rusak.")
 
     user = storage_mgr.get_user_by_id(user_id)
     if not user:
-        raise HTTPException(status_code=401, detail="Sesi pengguna tidak valid atau telah berakhir.")
+        raise HTTPException(status_code=401, detail="Sesi pengguna tidak valid atau akun tidak ditemukan.")
+    if user.get("is_active") == 0 or user.get("is_active") is False:
+        raise HTTPException(status_code=403, detail="Akun Anda dinonaktifkan oleh Administrator. Hubungi admin@epiona.my.id.")
     return user
 
 # --- AUTH DEPENDENCY ADMIN ---
@@ -72,7 +158,7 @@ def require_admin(current_user: dict = Depends(get_current_user)):
     """Memvalidasi bahwa pengguna aktif memiliki peran Administrator."""
     is_admin = (
         current_user.get("role") == "admin" or 
-        current_user.get("email") == "admin@epiona.my.id"
+        current_user.get("email") == ADMIN_EMAIL
     )
     if not is_admin:
         raise HTTPException(status_code=403, detail="Akses ditolak: Memerlukan otorisasi Administrator.")
@@ -92,21 +178,22 @@ def register_user(payload: RegisterRequest):
         "register", 
         f"Pendaftaran akun baru: {created['full_name']} ({created['email']})"
     )
+    quota_info = storage_mgr.get_user_quota(created["id"])
+    access_token = create_access_token(created)
     return AuthResponse(
         user_id=created["id"],
         email=created["email"],
         full_name=created["full_name"],
-        token=created["id"],
-        role=created.get("role", "user")
+        token=access_token,
+        role=created.get("role", "user"),
+        tier=quota_info.get("tier", "free"),
+        claude_quota_left=quota_info.get("claude_quota_left", 0),
+        tier_expires_at=quota_info.get("tier_expires_at")
     )
 
 @app.post("/api/v1/auth/login", response_model=AuthResponse)
 def login_user(payload: LoginRequest):
     """Autentikasi akun pengguna & administrator."""
-    # Pastikan akun admin terjamin
-    if payload.email.lower().strip() == "admin@epiona.my.id":
-        storage_mgr.ensure_admin_user()
-
     user = storage_mgr.get_user_by_email(payload.email)
     if not user:
         raise HTTPException(status_code=404, detail="Email belum terdaftar.")
@@ -118,7 +205,15 @@ def login_user(payload: LoginRequest):
     if not verify_password(payload.password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Kata sandi tidak sesuai.")
 
-    role = "admin" if user["email"] == "admin@epiona.my.id" else user.get("role", "user")
+    # Migrasi otomatis password lama ke bcrypt jika masih format legacy
+    if needs_password_rehash(user.get("password_hash", "")):
+        try:
+            new_hash = hash_password(payload.password)
+            storage_mgr.update_user_password(user["id"], new_hash)
+        except Exception as e:
+            print(f"[AUTH MIGRATION WARNING] Gagal rehash password: {e}")
+
+    role = "admin" if user["email"] == ADMIN_EMAIL else user.get("role", "user")
 
     # Perbarui aktivitas dan catat audit log
     storage_mgr.update_user_last_active(user["id"])
@@ -129,26 +224,63 @@ def login_user(payload: LoginRequest):
         {"role": role}
     )
 
+    quota_info = storage_mgr.get_user_quota(user["id"])
+    access_token = create_access_token(user)
+
     return AuthResponse(
         user_id=user["id"],
         email=user["email"],
         full_name=user["full_name"],
-        token=user["id"],
-        role=role
+        token=access_token,
+        role=role,
+        tier=quota_info.get("tier", "free"),
+        claude_quota_left=quota_info.get("claude_quota_left", 0),
+        tier_expires_at=quota_info.get("tier_expires_at")
     )
 
 @app.get("/api/v1/auth/me")
 def get_profile(current_user: dict = Depends(get_current_user)):
-    """Ambil informasi profil pengguna aktif."""
+    """Ambil informasi profil pengguna aktif beserta status kuota."""
     role = "admin" if current_user["email"] == "admin@epiona.my.id" else current_user.get("role", "user")
+    quota_info = storage_mgr.get_user_quota(current_user["id"])
     return {
         "id": current_user["id"],
         "email": current_user["email"],
         "full_name": current_user["full_name"],
         "role": role,
         "is_active": current_user.get("is_active", 1),
-        "created_at": current_user["created_at"]
+        "created_at": current_user["created_at"],
+        "tier": quota_info.get("tier", "free"),
+        "claude_quota_left": quota_info.get("claude_quota_left", 0),
+        "tier_expires_at": quota_info.get("tier_expires_at"),
+        "is_pro": quota_info.get("is_pro", False)
     }
+
+@app.get("/api/v1/user/quota", response_model=UserQuotaResponse)
+def get_user_quota_endpoint(current_user: dict = Depends(get_current_user)):
+    """Ambil sisa kuota chat Claude 3.5 Sonnet dan masa aktif langganan."""
+    quota = storage_mgr.get_user_quota(current_user["id"])
+    return UserQuotaResponse(
+        user_id=quota["user_id"],
+        tier=quota["tier"],
+        claude_quota_left=quota["claude_quota_left"],
+        tier_expires_at=quota["tier_expires_at"],
+        is_pro=quota["is_pro"]
+    )
+
+@app.post("/api/v1/subscription/activate")
+def activate_subscription(
+    payload: SubscriptionPlanRequest,
+    current_user: dict = Depends(require_admin)
+):
+    """Aktivasi paket langganan Pro (Khusus Administrator). Aktivasi gratis mandiri dinonaktifkan."""
+    try:
+        target_id = payload.target_user_id or current_user["id"]
+        res = storage_mgr.grant_subscription(target_id, payload.plan_type)
+        return res
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
 
 # --- SYSTEM HEALTH ---
 @app.get("/api/v1/health")
@@ -221,6 +353,21 @@ async def upload_document(
     if file_size == 0:
         raise HTTPException(status_code=400, detail="File PDF kosong.")
 
+    # Proteksi Ukuran Maksimum Upload (Batas MAX_UPLOAD_MB)
+    max_bytes = MAX_UPLOAD_MB * 1024 * 1024
+    if file_size > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"Ukuran file ({file_size / (1024*1024):.2f} MB) melebihi batas maksimum {MAX_UPLOAD_MB} MB."
+        )
+
+    # Validasi Magic Bytes PDF (%PDF-)
+    if not content.startswith(b"%PDF-"):
+        raise HTTPException(
+            status_code=400,
+            detail="File tidak valid: Magic bytes %PDF- tidak ditemukan."
+        )
+
     # 1. Hitung Checksum SHA-256
     file_hash = compute_sha256(content)
     doc_title = title.strip() if title and title.strip() else Path(file.filename).stem
@@ -292,27 +439,45 @@ async def upload_document(
     )
 
 @app.get("/api/v1/figures/{filename}")
-def get_figure_image(filename: str):
-    """Menyajikan file potongan gambar kurva / diagram yang diekstrak dari PDF dengan proteksi traversal."""
+def get_figure_image(filename: str, current_user: dict = Depends(get_current_user)):
+    """Menyajikan file potongan gambar kurva / diagram yang diekstrak dari PDF dengan otorisasi & proteksi kepemilikan."""
     safe_name = Path(filename).name
+    doc_id = storage_mgr.get_document_id_for_figure(safe_name)
+    if not doc_id:
+        clean = safe_name.replace("fig_", "").replace(".png", "")
+        parts = clean.split("_")
+        if parts:
+            doc_id = parts[0]
+    if not doc_id or not storage_mgr.check_user_owns_document(current_user["id"], doc_id):
+        raise HTTPException(status_code=403, detail="Akses ditolak. Gambar bukan milik Anda.")
     fig_path = FIGURES_DIR / safe_name
     if not fig_path.exists():
         raise HTTPException(status_code=404, detail="Gambar tidak ditemukan.")
     return FileResponse(path=fig_path)
 
 @app.get("/api/v1/pages/{filename}")
-def get_page_image_file(filename: str):
-    """Menyajikan render visual cuplikan lembaran halaman dokumen PDF dengan proteksi traversal."""
+def get_page_image_file(filename: str, current_user: dict = Depends(get_current_user)):
+    """Menyajikan render visual cuplikan lembaran halaman dokumen PDF dengan otorisasi & proteksi kepemilikan."""
     safe_name = Path(filename).name
+    clean = safe_name.replace("page_", "").replace(".png", "")
+    parts = clean.split("_")
+    doc_id = parts[0] if parts else None
+    if not doc_id or not storage_mgr.check_user_owns_document(current_user["id"], doc_id):
+        raise HTTPException(status_code=403, detail="Akses ditolak. Halaman dokumen bukan milik Anda.")
     page_path = PAGES_DIR / safe_name
     if not page_path.exists():
         raise HTTPException(status_code=404, detail="Cuplikan halaman tidak ditemukan.")
     return FileResponse(path=page_path, media_type="image/png")
 
 @app.get("/api/v1/thumbnails/{filename}")
-def get_thumbnail_image(filename: str):
-    """Menyajikan gambar thumbnail sampul halaman 1 dari dokumen PDF dengan proteksi traversal."""
+def get_thumbnail_image(filename: str, current_user: dict = Depends(get_current_user)):
+    """Menyajikan gambar thumbnail sampul halaman 1 dari dokumen PDF dengan otorisasi & proteksi kepemilikan."""
     safe_name = Path(filename).name
+    clean = safe_name.replace("thumb_", "").replace(".png", "")
+    parts = clean.split("_")
+    doc_id = parts[0] if parts else None
+    if not doc_id or not storage_mgr.check_user_owns_document(current_user["id"], doc_id):
+        raise HTTPException(status_code=403, detail="Akses ditolak. Thumbnail bukan milik Anda.")
     thumb_path = THUMBNAILS_DIR / safe_name
     if not thumb_path.exists():
         raise HTTPException(status_code=404, detail="Thumbnail dokumen tidak ditemukan.")
@@ -329,11 +494,16 @@ def get_page_thumbnail(
     if not doc:
         raise HTTPException(status_code=404, detail="Dokumen tidak ditemukan.")
     
+    # Guard Isolasi: Periksa apakah user memiliki hak akses ke dokumen ini
+    if not storage_mgr.check_user_owns_document(current_user["id"], doc_id):
+        raise HTTPException(status_code=403, detail="Akses ditolak. Anda tidak memiliki dokumen ini di MyLibrary Anda.")
+
     file_path = Path(doc["storage_path"])
     thumb_name = PdfDocumentParser.render_page_thumbnail(file_path, doc_id, page_num)
     if not thumb_name:
         raise HTTPException(status_code=404, detail="Gagal membuat thumbnail halaman.")
     return FileResponse(path=THUMBNAILS_DIR / thumb_name, media_type="image/png")
+
 
 @app.get("/api/v1/documents/{doc_id}/pages/{page_num}/rendered")
 def get_rendered_page(
@@ -425,14 +595,41 @@ def ask_assistant(
     current_user: dict = Depends(get_current_user)
 ):
     """Tanya jawab asisten literatur farmasi (Hybrid General AI + MyLibrary Grounded RAG)."""
+    # 0a. Validasi batas panjang pertanyaan (maksimal 8000 karakter)
+    if not request.question or not request.question.strip():
+        raise HTTPException(status_code=400, detail="Pertanyaan tidak boleh kosong.")
+    if len(request.question) > 8000:
+        raise HTTPException(status_code=400, detail="Pertanyaan melebihi batas maksimum 8000 karakter.")
+
+    # 0b. Rate limit mode web (academic/web) per user
+    if request.grounding_mode in ("academic", "web"):
+        check_web_mode_rate_limit(current_user["id"])
+
+    # Guard Kepemilikan Sesi: Jika session_id disediakan, wajib diverifikasi milik user aktif
+    if request.session_id:
+        if not storage_mgr.check_user_owns_session(current_user["id"], request.session_id):
+            raise HTTPException(status_code=404, detail="Sesi percakapan tidak ditemukan atau bukan milik Anda.")
+
     # Catat aktivitas prompt chat & perbarui status aktif pengguna
     storage_mgr.update_user_last_active(current_user["id"])
+
     storage_mgr.log_activity(
         current_user["id"],
         "chat_prompt",
         f"Mengajukan pertanyaan: \"{request.question[:120]}\"",
         {"question": request.question, "mode": request.grounding_mode, "session_id": request.session_id, "has_attachments": bool(request.attachments)}
     )
+
+    # 0. Verifikasi Kuota jika memilih model Claude 3.5 Sonnet
+    pref = (request.model_preference or "gemini-2.0-flash").lower()
+    is_claude_selected = any(k in pref for k in ["claude", "sonnet", "anthropic"])
+    user_quota = storage_mgr.get_user_quota(current_user["id"])
+    if is_claude_selected:
+        if not user_quota.get("is_pro") or user_quota.get("claude_quota_left", 0) <= 0:
+            raise HTTPException(
+                status_code=403,
+                detail="Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda telah habis. Silakan pilih Gemini 2.0 Flash (Gratis) atau tingkatkan paket Anda."
+            )
 
     # Ekstraksi dan pemrosesan lampiran (multimodal gambar & dokumen)
     processed_attachments = []
@@ -456,7 +653,7 @@ def ask_assistant(
     top_matches = []
 
     # Mode Penelusuran Web Akademik (PubMed Central / arXiv / Jurnal Ilmiah Internasional)
-    if request.grounding_mode == "academic":
+    if request.grounding_mode in ("academic", "web"):
         chat_history = []
         if request.session_id:
             try:
@@ -470,7 +667,8 @@ def ask_assistant(
         chat_result = ai_service.answer_academic_chat(
             question=request.question,
             academic_evidence=academic_evidence,
-            chat_history=chat_history
+            chat_history=chat_history,
+            model_preference=request.model_preference
         )
     else:
         user_docs = storage_mgr.list_user_documents(current_user["id"])
@@ -640,7 +838,8 @@ def ask_assistant(
                 relevant_pages=top_matches,
                 chat_history=chat_history,
                 attachments=processed_attachments,
-                focused_document_title=focused_doc_title
+                focused_document_title=focused_doc_title,
+                model_preference=request.model_preference
             )
 
     # Kesadaran Visual AI (Visual Awareness & Selective Grounding):
@@ -748,6 +947,15 @@ def ask_assistant(
         except Exception as e:
             print(f"[HISTORY LOG ERROR] {e}")
 
+    # Deduksi kuota jika menggunakan Claude secara sukses (bukan error konfigurasi/jaringan)
+    if is_claude_selected and not getattr(chat_result, "is_error", False):
+        storage_mgr.deduct_claude_quota(current_user["id"])
+        updated_quota = storage_mgr.get_user_quota(current_user["id"])
+        chat_result.claude_quota_left = updated_quota.get("claude_quota_left", 0)
+    else:
+        user_quota = storage_mgr.get_user_quota(current_user["id"])
+        chat_result.claude_quota_left = user_quota.get("claude_quota_left", 0)
+
     return chat_result
 
 # --- CHAT SESSIONS CRUD (CLAUDE-STYLE RECENTS) ---
@@ -765,13 +973,17 @@ def create_chat(payload: CreateSessionRequest, current_user: dict = Depends(get_
 
 @app.get("/api/v1/chats/{session_id}/messages")
 def get_session_messages(session_id: str, current_user: dict = Depends(get_current_user)):
-    """Mengambil seluruh riwayat pesan dari sesi percakapan tertentu."""
+    """Mengambil seluruh riwayat pesan dari sesi percakapan tertentu milik pengguna."""
+    if not storage_mgr.check_user_owns_session(current_user["id"], session_id):
+        raise HTTPException(status_code=404, detail="Sesi percakapan tidak ditemukan atau bukan milik Anda.")
     messages = storage_mgr.get_chat_messages(session_id)
     return {"messages": messages}
 
 @app.delete("/api/v1/chats/{session_id}")
 def delete_chat(session_id: str, current_user: dict = Depends(get_current_user)):
-    """Menghapus sesi percakapan beserta seluruh pesannya."""
+    """Menghapus sesi percakapan beserta seluruh pesannya milik pengguna."""
+    if not storage_mgr.check_user_owns_session(current_user["id"], session_id):
+        raise HTTPException(status_code=404, detail="Sesi percakapan tidak ditemukan atau bukan milik Anda.")
     storage_mgr.delete_chat_session(current_user["id"], session_id)
     return {"message": "Sesi percakapan berhasil dihapus."}
 
@@ -780,12 +992,15 @@ class RenameSessionRequest(BaseModel):
 
 @app.patch("/api/v1/chats/{session_id}")
 def rename_chat(session_id: str, payload: RenameSessionRequest, current_user: dict = Depends(get_current_user)):
-    """Mengubah judul sesi percakapan."""
+    """Mengubah judul sesi percakapan milik pengguna."""
+    if not storage_mgr.check_user_owns_session(current_user["id"], session_id):
+        raise HTTPException(status_code=404, detail="Sesi percakapan tidak ditemukan atau bukan milik Anda.")
     new_title = payload.title.strip()
     if not new_title:
         raise HTTPException(status_code=400, detail="Judul tidak boleh kosong.")
-    storage_mgr.update_chat_session_title(session_id, new_title)
+    storage_mgr.update_chat_session_title(session_id, new_title, user_id=current_user["id"])
     return {"message": "Judul percakapan berhasil diperbarui.", "title": new_title}
+
 
 # --- PENGATURAN AI ENGINE (OPENROUTER, ANTHROPIC, GEMINI & GROQ) ---
 class UpdateAiSettingsRequest(BaseModel):

@@ -12,6 +12,7 @@ import {
   LightboxImageItem,
   ModalConfirmState,
   ModalAlertState,
+  ModelPreference,
 } from "../types";
 
 // Modular UI Components
@@ -24,6 +25,7 @@ import { WorkspaceView } from "../components/workspace/WorkspaceView";
 import { DocumentPreviewModal } from "../components/modals/DocumentPreviewModal";
 import { UserChatInspectorModal } from "../components/modals/UserChatInspectorModal";
 import { ProfileSettingsModal } from "../components/modals/ProfileSettingsModal";
+import { SubscriptionModal } from "../components/modals/SubscriptionModal";
 import { ConfirmDialogModal, AlertDialogModal } from "../components/modals/ConfirmDialogModal";
 import { X } from "lucide-react";
 
@@ -71,6 +73,7 @@ export default function AppRoot() {
   const [isTypingStream, setIsTypingStream] = useState<boolean>(false);
   const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
   const [groundingMode, setGroundingMode] = useState<"library" | "academic">("library");
+  const [modelPreference, setModelPreference] = useState<ModelPreference>("gemini-2.0-flash");
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
   const [isSearchingSessions, setIsSearchingSessions] = useState(false);
   const [activeSessionMenuId, setActiveSessionMenuId] = useState<string | null>(null);
@@ -113,6 +116,7 @@ export default function AppRoot() {
 
   // Modals & UI Controls State
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+  const [isSubscriptionModalOpen, setIsSubscriptionModalOpen] = useState(false);
   const [confirmModal, setConfirmModal] = useState<ModalConfirmState | null>(null);
   const [alertModal, setAlertModal] = useState<ModalAlertState | null>(null);
 
@@ -240,7 +244,18 @@ export default function AppRoot() {
       if (savedTheme === "dark") document.documentElement.classList.add("dark");
       else document.documentElement.classList.remove("dark");
     }
+    const savedModel = localStorage.getItem("epiona_model_preference") as ModelPreference | null;
+    if (savedModel === "gemini-2.0-flash" || savedModel === "claude-3-5-sonnet") {
+      setModelPreference(savedModel);
+    }
   }, []);
+
+  function handleSelectModelPreference(m: ModelPreference) {
+    setModelPreference(m);
+    try {
+      localStorage.setItem("epiona_model_preference", m);
+    } catch (e) {}
+  }
 
   function toggleTheme() {
     setTheme((prev) => {
@@ -704,6 +719,7 @@ export default function AppRoot() {
         body: JSON.stringify({
           question: q || fallbackPrompt,
           grounding_mode: groundingMode,
+          model_preference: modelPreference,
           focused_document_id: activeDoc ? activeDoc.id : null,
           session_id: activeSession,
           attachments: currentAttachments.map((f) => ({
@@ -715,9 +731,22 @@ export default function AppRoot() {
         }),
       });
 
-      if (!res.ok) throw new Error("Gagal mendapatkan respon asisten");
+      if (!res.ok) {
+        if (res.status === 403) {
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = typeof errData.detail === "string" ? errData.detail : "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.";
+          setIsSubscriptionModalOpen(true);
+          throw new Error(errMsg);
+        }
+        throw new Error("Gagal mendapatkan respon asisten");
+      }
       const data = await res.json();
       stopStatus();
+
+      // Sinkronkan kuota Claude secara real-time
+      if (typeof data.claude_quota_left === "number") {
+        setCurrentUser((prev) => prev ? ({ ...prev, claude_quota_left: data.claude_quota_left }) : null);
+      }
 
       if (data.session_title && activeSession) {
         setChatSessions((prev) => prev.map((s) => (s.id === activeSession ? { ...s, title: data.session_title } : s)));
@@ -732,7 +761,7 @@ export default function AppRoot() {
         {
           id: (Date.now() + 1).toString(),
           sender: "assistant",
-          text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
+          text: err.message || "Maaf, terjadi kendala saat menghubungkan ke asisten.",
           timestamp: getNow24Hour(),
         },
       ]);
@@ -791,6 +820,7 @@ export default function AppRoot() {
         body: JSON.stringify({
           question: userMsg.text,
           grounding_mode: groundingMode,
+          model_preference: modelPreference,
           focused_document_id: activeDoc ? activeDoc.id : null,
           session_id: currentSessionId,
           attachments: (userMsg.attachments || []).map((f) => ({
@@ -801,9 +831,23 @@ export default function AppRoot() {
           })),
         }),
       });
-      if (!res.ok) throw new Error("Gagal mengulangi respon");
+      if (!res.ok) {
+        if (res.status === 403) {
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = typeof errData.detail === "string" ? errData.detail : "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.";
+          setIsSubscriptionModalOpen(true);
+          throw new Error(errMsg);
+        }
+        throw new Error("Gagal mengulangi respon");
+      }
       const data = await res.json();
       stopStatus();
+
+      // Sinkronkan kuota Claude secara real-time
+      if (typeof data.claude_quota_left === "number") {
+        setCurrentUser((prev) => prev ? ({ ...prev, claude_quota_left: data.claude_quota_left }) : null);
+      }
+
       streamAssistantReply(
         data.answer,
         data.citations || [],
@@ -811,7 +855,7 @@ export default function AppRoot() {
         undefined,
         targetAssistantId || undefined
       );
-    } catch (err) {
+    } catch (err: any) {
       stopStatus();
       if (targetAssistantId) {
         setMessages((prev) =>
@@ -819,7 +863,7 @@ export default function AppRoot() {
             m.id === targetAssistantId
               ? {
                   ...m,
-                  text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
+                  text: err.message || "Maaf, terjadi kendala saat menghubungkan ke asisten.",
                   timestamp: getNow24Hour(),
                 }
               : m
@@ -878,14 +922,29 @@ export default function AppRoot() {
         body: JSON.stringify({
           question: trimmed,
           grounding_mode: groundingMode,
+          model_preference: modelPreference,
           focused_document_id: activeDoc ? activeDoc.id : null,
           session_id: currentSessionId,
           attachments: [],
         }),
       });
-      if (!res.ok) throw new Error("Gagal mengirim hasil edit");
+      if (!res.ok) {
+        if (res.status === 403) {
+          const errData = await res.json().catch(() => ({}));
+          const errMsg = typeof errData.detail === "string" ? errData.detail : "Akses Claude 3.5 Sonnet memerlukan paket Pro atau kuota chat Anda habis.";
+          setIsSubscriptionModalOpen(true);
+          throw new Error(errMsg);
+        }
+        throw new Error("Gagal mengirim hasil edit");
+      }
       const data = await res.json();
       stopStatus();
+
+      // Sinkronkan kuota Claude secara real-time
+      if (typeof data.claude_quota_left === "number") {
+        setCurrentUser((prev) => prev ? ({ ...prev, claude_quota_left: data.claude_quota_left }) : null);
+      }
+
       streamAssistantReply(
         data.answer,
         data.citations || [],
@@ -893,7 +952,7 @@ export default function AppRoot() {
         undefined,
         targetAssistantId || undefined
       );
-    } catch (err) {
+    } catch (err: any) {
       stopStatus();
       if (targetAssistantId) {
         setMessages((prev) =>
@@ -901,7 +960,7 @@ export default function AppRoot() {
             m.id === targetAssistantId
               ? {
                   ...m,
-                  text: "Maaf, terjadi kendala saat menghubungkan ke asisten.",
+                  text: err.message || "Maaf, terjadi kendala saat menghubungkan ke asisten.",
                   timestamp: getNow24Hour(),
                 }
               : m
@@ -1265,6 +1324,9 @@ export default function AppRoot() {
             setIsPdfPanelOpen={setIsPdfPanelOpen}
             groundingMode={groundingMode}
             setGroundingMode={setGroundingMode}
+            modelPreference={modelPreference}
+            setModelPreference={handleSelectModelPreference}
+            onOpenSubscriptionModal={() => setIsSubscriptionModalOpen(true)}
             toggleTheme={toggleTheme}
             isSourcesOpen={isSourcesOpen}
             setIsSourcesOpen={setIsSourcesOpen}
@@ -1350,6 +1412,30 @@ export default function AppRoot() {
         documents={documents}
         chatSessions={chatSessions}
         onLogout={handleLogout}
+      />
+
+      <SubscriptionModal
+        isOpen={isSubscriptionModalOpen}
+        onClose={() => setIsSubscriptionModalOpen(false)}
+        currentUser={currentUser}
+        onSubscriptionSuccess={(newQuota, newTier) => {
+          setCurrentUser((prev) =>
+            prev
+              ? {
+                  ...prev,
+                  tier: newTier as any,
+                  claude_quota_left: (prev.claude_quota_left || 0) + newQuota,
+                }
+              : null
+          );
+          showAlert(
+            "Langganan Aktif!",
+            `Selamat! Paket ${newTier === "pro_weekly" ? "Pro Mingguan" : "Pro Bulanan"} berhasil diaktifkan. Anda mendapatkan +${newQuota} chat Claude 3.5 Sonnet.`,
+            "info"
+          );
+        }}
+        apiBase={API_BASE}
+        theme={theme}
       />
 
       <ConfirmDialogModal

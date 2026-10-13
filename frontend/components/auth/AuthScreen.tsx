@@ -214,7 +214,7 @@ export function AuthScreen({
         </form>
 
         <div
-          className={`mt-6 pt-5 border-t flex items-center justify-between text-xs ${
+          className={`mt-6 pt-5 border-t flex items-center justify-center text-xs ${
             theme === "dark" ? "border-[#2A333B] text-[#9AA9B5]" : "border-[#DCE3E8] text-[#5B6B78]"
           }`}
         >
@@ -222,20 +222,8 @@ export function AuthScreen({
             <ShieldCheck
               className={`w-4 h-4 ${theme === "dark" ? "text-[#34D3BE]" : "text-[#0F766E]"}`}
             />
-            Isolasi Dokumen Multi-Tenant
+            Autentikasi Terenkripsi & Isolasi Multi-Tenant
           </span>
-          <button
-            onClick={() => {
-              setEmailInput("guest@epiona.ac.id");
-              setPasswordInput("guest123");
-              setAuthMode("login");
-            }}
-            className={`hover:underline font-semibold cursor-pointer ${
-              theme === "dark" ? "text-[#34D3BE]" : "text-[#0F766E]"
-            }`}
-          >
-            Masuk Demo Tamu
-          </button>
         </div>
       </div>
     </div>

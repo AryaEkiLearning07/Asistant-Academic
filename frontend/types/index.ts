@@ -8,7 +8,9 @@ export interface CitationItem {
   document_title: string;
   page_number: number;
   exact_quote: string;
+  is_verbatim?: boolean;
   // Metadata Tambahan Mode Web Akademik
+
   source_type?: "local_pdf" | "academic_web";
   journal_name?: string;
   publication_year?: string;
@@ -57,12 +59,16 @@ export interface DocumentItem {
   pdf_url: string;
 }
 
+export type ModelPreference = "gemini-2.0-flash" | "claude-3-5-sonnet";
+
 export interface UserProfile {
   id: string;
   email: string;
   full_name: string;
   token: string;
   role?: string;
+  tier?: "free" | "pro_weekly" | "pro_monthly";
+  claude_quota_left?: number;
 }
 
 export interface ChatSessionItem {

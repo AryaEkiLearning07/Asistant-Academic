@@ -1,11 +1,17 @@
 import fitz  # PyMuPDF
 import uuid
+import hashlib
 from pathlib import Path
 from typing import Dict, Any, List, Union
-from app.config import FIGURES_DIR, THUMBNAILS_DIR, PAGES_DIR
+from app.config import FIGURES_DIR, THUMBNAILS_DIR, PAGES_DIR, JWT_SECRET
 
 class PdfDocumentParser:
     """Parser dokumen PDF berbasis PyMuPDF yang mempertahankan nomor halaman, memotong gambar grafik, dan membuat thumbnail sampul halaman 1."""
+
+    @staticmethod
+    def _file_token(doc_id: str) -> str:
+        """Token acak deterministik berbasis secret HMAC/SHA-256 agar nama file tidak bisa ditebak."""
+        return hashlib.sha256(f"{doc_id}:{JWT_SECRET}".encode("utf-8")).hexdigest()[:12]
 
     @staticmethod
     def parse_pdf(file_input: Union[bytes, Path, str], doc_id: str = "") -> Dict[str, Any]:
@@ -19,9 +25,10 @@ class PdfDocumentParser:
         pages = []
         figures = []
         doc_prefix = doc_id if doc_id else str(uuid.uuid4())[:8]
+        file_sec_token = PdfDocumentParser._file_token(doc_prefix)
 
-        # 1. Render thumbnail halaman 1 (snapshot tampilan fisik halaman pertama)
-        thumbnail_filename = f"thumb_{doc_prefix}.png"
+        # 1. Render thumbnail halaman 1 (snapshot tampilan fisik halaman pertama dengan token tak tertebak)
+        thumbnail_filename = f"thumb_{doc_prefix}_{file_sec_token}.png"
         if total_pages > 0:
             try:
                 page0 = doc[0]
@@ -30,6 +37,7 @@ class PdfDocumentParser:
                 pix.save(str(thumb_path))
             except Exception:
                 thumbnail_filename = ""
+
 
         # 2. Analisis frekuensi bounding box gambar di seluruh halaman (deteksi latar belakang slide / watermark berulang)
         from collections import Counter
@@ -91,9 +99,10 @@ class PdfDocumentParser:
                     if pix.width < 100 or pix.height < 100:
                         continue
 
-                    fig_filename = f"fig_{doc_prefix}_p{page_num}_{img_idx + 1}.png"
+                    fig_filename = f"fig_{doc_prefix}_{file_sec_token}_p{page_num}_{img_idx + 1}.png"
                     fig_path = FIGURES_DIR / fig_filename
                     pix.save(str(fig_path))
+
 
                     # 5. Ekstraksi Caption Kontekstual Berbasis Kedekatan Geometris (Proximity Captioning)
                     blocks = page.get_text("blocks")
@@ -147,10 +156,14 @@ class PdfDocumentParser:
     @staticmethod
     def render_page_thumbnail(pdf_path: Path, doc_id: str, page_num: int) -> str:
         """Render thumbnail halaman spesifik beresolusi 72 DPI dan simpan ke THUMBNAILS_DIR untuk sidebar thumbnail Google Drive."""
-        thumb_filename = f"thumb_{doc_id}_p{page_num}.png"
+        token = PdfDocumentParser._file_token(doc_id)
+        thumb_filename = f"thumb_{doc_id}_{token}_p{page_num}.png"
+        legacy_filename = f"thumb_{doc_id}_p{page_num}.png"
         thumb_path = THUMBNAILS_DIR / thumb_filename
         if thumb_path.exists():
             return thumb_filename
+        if (THUMBNAILS_DIR / legacy_filename).exists():
+            return legacy_filename
         try:
             if pdf_path.exists():
                 doc = fitz.open(str(pdf_path))
@@ -168,10 +181,14 @@ class PdfDocumentParser:
     @staticmethod
     def render_page_image(pdf_path: Path, doc_id: str, page_num: int, dpi: int = 150) -> str:
         """Render lembaran fisik halaman dokumen beresolusi tinggi (150 DPI) untuk tampilan kertas lembaran langsung di Workspace."""
-        page_filename = f"page_{doc_id}_p{page_num}.png"
+        token = PdfDocumentParser._file_token(doc_id)
+        page_filename = f"page_{doc_id}_{token}_p{page_num}.png"
+        legacy_filename = f"page_{doc_id}_p{page_num}.png"
         page_path = PAGES_DIR / page_filename
         if page_path.exists():
             return page_filename
+        if (PAGES_DIR / legacy_filename).exists():
+            return legacy_filename
         try:
             if pdf_path.exists():
                 doc = fitz.open(str(pdf_path))
@@ -189,10 +206,14 @@ class PdfDocumentParser:
     @staticmethod
     def ensure_thumbnail(pdf_path: Path, doc_id: str) -> str:
         """Pastikan thumbnail halaman 1 ada di disk. Jika belum, render langsung dari file PDF."""
-        thumb_filename = f"thumb_{doc_id}.png"
+        token = PdfDocumentParser._file_token(doc_id)
+        thumb_filename = f"thumb_{doc_id}_{token}.png"
+        legacy_filename = f"thumb_{doc_id}.png"
         thumb_path = THUMBNAILS_DIR / thumb_filename
         if thumb_path.exists():
             return thumb_filename
+        if (THUMBNAILS_DIR / legacy_filename).exists():
+            return legacy_filename
         try:
             if pdf_path.exists():
                 doc = fitz.open(str(pdf_path))
@@ -205,3 +226,4 @@ class PdfDocumentParser:
         except Exception:
             pass
         return ""
+

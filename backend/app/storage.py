@@ -1,3 +1,4 @@
+import bcrypt
 import hashlib
 import hmac
 import logging
@@ -20,24 +21,43 @@ from app.config import (
     MYSQL_PASSWORD,
     MYSQL_DATABASE,
     USE_MYSQL,
+    ADMIN_EMAIL,
+    ADMIN_PASSWORD,
+    ADMIN_PASSWORD_HASH,
 )
 
 logger = logging.getLogger("epiona_storage")
 
 def hash_password(password: str) -> str:
-    """Hash password dengan salt acak 16-byte menggunakan Python stdlib SHA-256."""
-    salt = os.urandom(16).hex()
-    hashed = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-    return f"{salt}:{hashed}"
+    """Hash password menggunakan bcrypt dengan salt otomatis."""
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode("utf-8"), salt).decode("utf-8")
 
 def verify_password(password: str, stored_hash: str) -> bool:
-    """Verifikasi kecocokan password dengan hash dan salt tersimpan."""
+    """Verifikasi kecocokan password dengan hash bcrypt atau legacy salted SHA-256."""
+    if not stored_hash or not password:
+        return False
     try:
-        salt, hashed = stored_hash.split(":", 1)
-        expected = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
-        return hmac.compare_digest(hashed, expected)
+        # Cek format bcrypt ($2a$ atau $2b$)
+        if stored_hash.startswith("$2a$") or stored_hash.startswith("$2b$"):
+            return bcrypt.checkpw(password.encode("utf-8"), stored_hash.encode("utf-8"))
+
+        # Fallback migrasi: legacy salted SHA-256 (format salt:hash)
+        if ":" in stored_hash:
+            salt, hashed = stored_hash.split(":", 1)
+            expected = hashlib.sha256((salt + password).encode("utf-8")).hexdigest()
+            return hmac.compare_digest(hashed, expected)
+
+        return False
     except Exception:
         return False
+
+def needs_password_rehash(stored_hash: str) -> bool:
+    """Cek apakah hash masih menggunakan format lama dan perlu dimigrasikan ke bcrypt."""
+    if not stored_hash:
+        return True
+    return not (stored_hash.startswith("$2a$") or stored_hash.startswith("$2b$"))
+
 
 def compute_sha256(content: bytes) -> str:
     """Hitung SHA-256 checksum dari byte file."""
@@ -340,7 +360,10 @@ class LocalStorageManager:
             for col_def_mysql, col_def_sqlite in [
                 ("role VARCHAR(20) DEFAULT 'user'", "role TEXT DEFAULT 'user'"),
                 ("is_active TINYINT DEFAULT 1", "is_active INTEGER DEFAULT 1"),
-                ("last_active_at VARCHAR(64)", "last_active_at TEXT")
+                ("last_active_at VARCHAR(64)", "last_active_at TEXT"),
+                ("tier VARCHAR(20) DEFAULT 'free'", "tier TEXT DEFAULT 'free'"),
+                ("claude_quota_left INT DEFAULT 0", "claude_quota_left INTEGER DEFAULT 0"),
+                ("tier_expires_at VARCHAR(64)", "tier_expires_at TEXT")
             ]:
                 try:
                     if self.db_type == "mysql":
@@ -349,6 +372,33 @@ class LocalStorageManager:
                         cursor.execute(f"ALTER TABLE users ADD COLUMN {col_def_sqlite}")
                 except Exception:
                     pass
+
+            # Buat tabel subscriptions untuk mencatat riwayat transaksi langganan
+            if self.db_type == "mysql":
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id VARCHAR(64) PRIMARY KEY,
+                    user_id VARCHAR(64) NOT NULL,
+                    plan_type VARCHAR(32) NOT NULL,
+                    amount DECIMAL(12, 2) NOT NULL,
+                    status VARCHAR(32) DEFAULT 'active',
+                    created_at VARCHAR(64) NOT NULL,
+                    expires_at VARCHAR(64) NOT NULL
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+                """)
+            else:
+                cursor.execute("""
+                CREATE TABLE IF NOT EXISTS subscriptions (
+                    id TEXT PRIMARY KEY,
+                    user_id TEXT NOT NULL,
+                    plan_type TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    status TEXT DEFAULT 'active',
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL
+                );
+                """)
+                cursor.execute("CREATE INDEX IF NOT EXISTS idx_sub_user ON subscriptions(user_id);")
 
             # Buat tabel activity_logs untuk memantau aktivitas user secara real-time
             if self.db_type == "mysql":
@@ -418,15 +468,22 @@ class LocalStorageManager:
         }
 
     def ensure_admin_user(self) -> None:
-        """Membuat atau memastikan akun default admin Arya Eki Nur Seputro siap digunakan."""
-        admin_email = "admin@epiona.my.id"
-        admin_pwd = "aryaeki07"
-        admin_name = "Arya Eki Nur Seputro (Administrator)"
-        pwd_hash = hash_password(admin_pwd)
+        """Membuat atau memastikan akun default admin siap digunakan dari konfigurasi environment."""
+        admin_email = ADMIN_EMAIL or "admin@epiona.my.id"
+        admin_name = "Epiona Administrator"
         now_iso = datetime.now().isoformat()
+
+        pwd_hash = None
+        if ADMIN_PASSWORD_HASH:
+            pwd_hash = ADMIN_PASSWORD_HASH
+        elif ADMIN_PASSWORD:
+            pwd_hash = hash_password(ADMIN_PASSWORD)
 
         user = self.get_user_by_email(admin_email)
         if not user:
+            if not pwd_hash:
+                logger.warning("ADMIN_PASSWORD tidak disetel di environment. Akun admin belum di-bootstrap.")
+                return
             user_id = str(uuid.uuid4())
             try:
                 self._execute("""
@@ -438,22 +495,18 @@ class LocalStorageManager:
                 INSERT INTO users (id, email, password_hash, full_name, created_at)
                 VALUES (%s, %s, %s, %s, %s)
                 """, (user_id, admin_email, pwd_hash, admin_name, now_iso))
-            logger.info("Akun default Administrator 'admin@epiona.my.id' berhasil dibuat.")
+            logger.info(f"Akun default Administrator '{admin_email}' berhasil dibuat dari environment.")
         else:
-            # Perbarui password_hash, nama, dan role admin agar selalu sinkron
+            # Pastikan role admin tetap 'admin' tanpa mereset password pengguna
             try:
                 self._execute("""
                 UPDATE users 
-                SET password_hash = %s, full_name = %s, role = 'admin', is_active = 1, last_active_at = %s
+                SET role = 'admin', is_active = 1
                 WHERE email = %s
-                """, (pwd_hash, admin_name, now_iso, admin_email))
+                """, (admin_email,))
             except Exception:
-                self._execute("""
-                UPDATE users 
-                SET password_hash = %s, full_name = %s
-                WHERE email = %s
-                """, (pwd_hash, admin_name, admin_email))
-            logger.info("Akun Administrator 'admin@epiona.my.id' disinkronkan.")
+                pass
+            logger.info(f"Role Administrator '{admin_email}' diverifikasi (password tidak di-reset).")
 
     def get_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         row = self._fetchone("SELECT * FROM users WHERE email = %s", (email.lower().strip(),))
@@ -480,6 +533,144 @@ class LocalStorageManager:
             self._execute("UPDATE users SET last_active_at = %s WHERE id = %s", (datetime.now().isoformat(), user_id))
         except Exception:
             pass
+
+    def update_user_password(self, user_id: str, new_password_hash: str) -> None:
+        """Memperbarui password_hash pengguna (misal saat migrasi hash ke bcrypt)."""
+        self._execute("UPDATE users SET password_hash = %s WHERE id = %s", (new_password_hash, user_id))
+
+
+    def get_user_quota(self, user_id: str) -> Dict[str, Any]:
+        """Mengambil data kuota pengguna dan mengevaluasi masa aktif langganan."""
+        row = self._fetchone("SELECT id, email, role, tier, claude_quota_left, tier_expires_at FROM users WHERE id = %s", (user_id,))
+        if not row:
+            return {"user_id": user_id, "tier": "free", "claude_quota_left": 0, "tier_expires_at": None, "is_pro": False}
+        
+        role = row.get("role", "user")
+        if role == "admin" or row.get("email") == "admin@epiona.my.id":
+            return {
+                "user_id": user_id,
+                "tier": "admin_pro",
+                "claude_quota_left": 999999,
+                "tier_expires_at": None,
+                "is_pro": True
+            }
+
+        tier = row.get("tier") or "free"
+        quota = row.get("claude_quota_left") or 0
+        expires_at = row.get("tier_expires_at")
+
+        # Cek apakah langganan sudah kedaluwarsa
+        if expires_at and tier != "free":
+            try:
+                exp_dt = datetime.fromisoformat(expires_at)
+                if datetime.now() > exp_dt:
+                    # Downgrade ke free
+                    self._execute("UPDATE users SET tier = 'free', claude_quota_left = 0 WHERE id = %s", (user_id,))
+                    tier = "free"
+                    quota = 0
+            except Exception:
+                pass
+
+        is_pro = tier in ("pro_weekly", "pro_monthly", "admin_pro") and quota > 0
+        return {
+            "user_id": user_id,
+            "tier": tier,
+            "claude_quota_left": quota,
+            "tier_expires_at": expires_at,
+            "is_pro": is_pro
+        }
+
+    def deduct_claude_quota(self, user_id: str) -> bool:
+        """Mengurangi kuota chat Claude 3.5 Sonnet sebanyak 1."""
+        user = self._fetchone("SELECT role, email, tier, claude_quota_left FROM users WHERE id = %s", (user_id,))
+        if not user:
+            return False
+        
+        # Admin tidak memotong kuota
+        if user.get("role") == "admin" or user.get("email") == "admin@epiona.my.id":
+            return True
+            
+        current_quota = user.get("claude_quota_left") or 0
+        if current_quota <= 0:
+            return False
+
+        try:
+            self._execute("UPDATE users SET claude_quota_left = GREATEST(0, claude_quota_left - 1) WHERE id = %s", (user_id,))
+            return True
+        except Exception:
+            return False
+
+    def grant_subscription(self, user_id: str, plan_type: str) -> Dict[str, Any]:
+        """Mengaktifkan atau memperpanjang paket langganan pengguna."""
+        from datetime import timedelta
+
+        now_dt = datetime.now()
+        now_iso = now_dt.isoformat()
+        
+        if plan_type == "pro_weekly":
+            bonus_quota = 150
+            days = 7
+            amount = 19000.00
+        elif plan_type == "pro_monthly":
+            bonus_quota = 700
+            days = 30
+            amount = 49000.00
+        else:
+            raise ValueError(f"Tipe paket tidak valid: {plan_type}")
+
+        # Cek apakah user saat ini sudah punya masa aktif
+        current = self.get_user_quota(user_id)
+        current_exp = current.get("tier_expires_at")
+        base_dt = now_dt
+        if current_exp and current.get("is_pro"):
+            try:
+                parsed_exp = datetime.fromisoformat(current_exp)
+                if parsed_exp > now_dt:
+                    base_dt = parsed_exp
+            except Exception:
+                pass
+
+        new_expires_dt = base_dt + timedelta(days=days)
+        new_expires_iso = new_expires_dt.isoformat()
+
+        # Update users
+        try:
+            self._execute("""
+            UPDATE users 
+            SET tier = %s, claude_quota_left = claude_quota_left + %s, tier_expires_at = %s
+            WHERE id = %s
+            """, (plan_type, bonus_quota, new_expires_iso, user_id))
+        except Exception:
+            self._execute("""
+            UPDATE users 
+            SET tier = %s, claude_quota_left = %s, tier_expires_at = %s
+            WHERE id = %s
+            """, (plan_type, bonus_quota, new_expires_iso, user_id))
+
+        # Catat ke subscriptions
+        sub_id = str(uuid.uuid4())
+        try:
+            self._execute("""
+            INSERT INTO subscriptions (id, user_id, plan_type, amount, status, created_at, expires_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (sub_id, user_id, plan_type, amount, "active", now_iso, new_expires_iso))
+        except Exception as e:
+            logger.warning(f"Gagal mencatat subscriptions record: {e}")
+
+        self.log_activity(
+            user_id,
+            "subscription_activated",
+            f"Paket {plan_type.upper()} aktif (+{bonus_quota} chat Claude, s.d. {new_expires_dt.strftime('%d %b %Y')})",
+            {"plan": plan_type, "quota_added": bonus_quota, "expires_at": new_expires_iso}
+        )
+
+        return {
+            "status": "success",
+            "plan_type": plan_type,
+            "added_quota": bonus_quota,
+            "expires_at": new_expires_iso,
+            "message": f"Paket {plan_type} berhasil diaktifkan."
+        }
 
     def log_activity(self, user_id: str, action_type: str, description: str, details: dict = None, ip_address: str = None) -> None:
         """Mencatat aktivitas live user ke dalam feed monitoring admin."""
@@ -824,7 +1015,19 @@ class LocalStorageManager:
         rows = self._fetchall(query, (document_id, limit))
         return [dict(r) for r in rows]
 
+    def get_document_id_for_figure(self, filename: str) -> Optional[str]:
+        """Dapatkan document_id pemilik dari nama file gambar potongan figure."""
+        row = self._fetchone("SELECT document_id FROM document_figures WHERE image_filename = %s", (filename,))
+        if row:
+            return row.get("document_id")
+        return None
+
     # --- CHAT SESSIONS & CONVERSATION HISTORY ---
+    def check_user_owns_session(self, user_id: str, session_id: str) -> bool:
+        """Periksa apakah user memiliki hak akses atas sesi percakapan tertentu."""
+        row = self._fetchone("SELECT id FROM chat_sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
+        return bool(row)
+
     def create_chat_session(self, user_id: str, title: str = "Percakapan Baru") -> Dict[str, Any]:
         """Buat sesi percakapan baru untuk user."""
         session_id = str(uuid.uuid4())
@@ -845,10 +1048,13 @@ class LocalStorageManager:
         return self._fetchall(sql, (user_id,))
 
     def delete_chat_session(self, user_id: str, session_id: str) -> bool:
-        """Hapus sesi percakapan beserta seluruh pesannya."""
+        """Hapus sesi percakapan beserta seluruh pesannya HANYA jika sesi adalah milik pengguna."""
+        if not self.check_user_owns_session(user_id, session_id):
+            return False
         self._execute("DELETE FROM chat_messages WHERE session_id = %s", (session_id,))
         self._execute("DELETE FROM chat_sessions WHERE id = %s AND user_id = %s", (session_id, user_id))
         return True
+
 
     def save_chat_message(self, session_id: str, sender: str, text: str, citations: list = None, figures: list = None, attachments: list = None) -> Dict[str, Any]:
         """Simpan satu pesan ke dalam sesi percakapan, termasuk sitasi, figur, dan lampiran."""
@@ -927,6 +1133,13 @@ class LocalStorageManager:
             })
         return messages
 
-    def update_chat_session_title(self, session_id: str, title: str) -> None:
+    def update_chat_session_title(self, session_id: str, title: str, user_id: Optional[str] = None) -> bool:
         """Perbarui judul sesi percakapan sesuai konteks pertanyaan pertama."""
-        self._execute("UPDATE chat_sessions SET title = %s, updated_at = %s WHERE id = %s", (title, datetime.now().isoformat(), session_id))
+        if user_id:
+            if not self.check_user_owns_session(user_id, session_id):
+                return False
+            self._execute("UPDATE chat_sessions SET title = %s, updated_at = %s WHERE id = %s AND user_id = %s", (title, datetime.now().isoformat(), session_id, user_id))
+        else:
+            self._execute("UPDATE chat_sessions SET title = %s, updated_at = %s WHERE id = %s", (title, datetime.now().isoformat(), session_id))
+        return True
+

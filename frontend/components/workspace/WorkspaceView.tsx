@@ -16,6 +16,7 @@ import {
   CitationItem,
   Message,
   AttachedFileItem,
+  ModelPreference,
 } from "../../types";
 import { ChatBubble } from "../chat/ChatBubble";
 import { ChatInputForm } from "../chat/ChatInputForm";
@@ -33,6 +34,9 @@ interface WorkspaceViewProps {
   setIsPdfPanelOpen: (isOpen: boolean) => void;
   groundingMode: "library" | "academic";
   setGroundingMode: (m: "library" | "academic") => void;
+  modelPreference: ModelPreference;
+  setModelPreference: (m: ModelPreference) => void;
+  onOpenSubscriptionModal?: () => void;
   toggleTheme: () => void;
   isSourcesOpen: boolean;
   setIsSourcesOpen: (isOpen: boolean) => void;
@@ -99,6 +103,9 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
   setIsPdfPanelOpen,
   groundingMode,
   setGroundingMode,
+  modelPreference,
+  setModelPreference,
+  onOpenSubscriptionModal,
   toggleTheme,
   isSourcesOpen,
   setIsSourcesOpen,
@@ -400,6 +407,10 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 isRecording={isRecording}
                 groundingMode={groundingMode}
                 setGroundingMode={setGroundingMode}
+                modelPreference={modelPreference}
+                setModelPreference={setModelPreference}
+                currentUser={currentUser}
+                onOpenSubscriptionModal={onOpenSubscriptionModal}
                 attachedFiles={attachedFiles}
                 setAttachedFiles={setAttachedFiles}
                 chatTextareaRef={chatTextareaRef}
@@ -484,6 +495,10 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 isRecording={isRecording}
                 groundingMode={groundingMode}
                 setGroundingMode={setGroundingMode}
+                modelPreference={modelPreference}
+                setModelPreference={setModelPreference}
+                currentUser={currentUser}
+                onOpenSubscriptionModal={onOpenSubscriptionModal}
                 attachedFiles={attachedFiles}
                 setAttachedFiles={setAttachedFiles}
                 chatTextareaRef={chatTextareaRef}
