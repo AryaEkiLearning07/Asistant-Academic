@@ -1,6 +1,7 @@
 import type { Config } from "tailwindcss";
 
 const config: Config = {
+  darkMode: "class",
   content: [
     "./pages/**/*.{js,ts,jsx,tsx,mdx}",
     "./components/**/*.{js,ts,jsx,tsx,mdx}",
@@ -8,26 +9,35 @@ const config: Config = {
   ],
   theme: {
     extend: {
-      fontFamily: {
-        serif: ["Newsreader", "Georgia", "Cambria", "serif"],
-        sans: ["Inter", "system-ui", "-apple-system", "BlinkMacSystemFont", "sans-serif"],
-      },
       colors: {
+        bg: "var(--bg)",
+        surface: "var(--surface)",
+        "surface-2": "var(--surface-2)",
+        border: "var(--border)",
+        text: "var(--text)",
+        "text-muted": "var(--text-muted)",
+        accent: "var(--accent)",
+        "accent-soft": "var(--accent-soft)",
+        "ev-jurnal": "var(--ev-jurnal)",
+        "ev-label": "var(--ev-label)",
+        "ev-web": "var(--ev-web)",
+        danger: "var(--danger)",
+        // Backward compatibility mappings
         epiona: {
-          bgLight: "#F7F9FA",
-          bgDark: "#12161A",
+          bgLight: "#FAFAF9",
+          bgDark: "#0F1115",
           surfaceLight: "#FFFFFF",
-          surfaceDark: "#1B2127",
-          textLight: "#12202B",
-          textDark: "#E6EDF2",
-          mutedLight: "#5B6B78",
-          mutedDark: "#9AA9B5",
-          borderLight: "#DCE3E8",
-          borderDark: "#2A333B",
+          surfaceDark: "#16191F",
+          textLight: "#17191C",
+          textDark: "#E8EAED",
+          mutedLight: "#5F6670",
+          mutedDark: "#9AA1AB",
+          borderLight: "#E5E7E3",
+          borderDark: "#2A2F37",
           tealLight: "#0F766E",
-          tealDark: "#34D3BE",
-          coralLight: "#E8684A",
-          coralDark: "#F08A70",
+          tealDark: "#2DD4BF",
+          coralLight: "#DC2626",
+          coralDark: "#F87171",
         },
         primary: {
           50: "#f0fdfa",
@@ -38,9 +48,25 @@ const config: Config = {
           800: "#115e59",
         },
       },
+      borderRadius: {
+        sm: "6px",
+        md: "10px",
+        lg: "14px",
+        pill: "9999px",
+      },
+      boxShadow: {
+        popover: "0 8px 24px rgba(0, 0, 0, 0.12)",
+        overlay: "0 8px 24px rgba(0, 0, 0, 0.12)",
+      },
+      fontFamily: {
+        sans: ["var(--font-inter)", "Inter", "system-ui", "-apple-system", "sans-serif"],
+        mono: ["var(--font-mono)", "JetBrains Mono", "ui-monospace", "monospace"],
+        serif: ["Source Serif 4", "Newsreader", "Georgia", "serif"],
+      },
     },
   },
   plugins: [],
 };
 
 export default config;
+

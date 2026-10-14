@@ -5,6 +5,8 @@ import {
   UserProfile,
   DocumentItem,
   CitationItem,
+  SourceItem,
+  SourceItemType,
   FigureSnippet,
   Message,
   ChatSessionItem,
@@ -803,7 +805,7 @@ export default function AppRoot() {
                 const parsedSources: CitationItem[] = rawSources.map((s: any, idx: number) => ({
                   document_id: s.id ? String(s.id) : `search-${idx + 1}`,
                   document_title: s.title || "Referensi Terverifikasi",
-                  page_number: 1,
+                  page_number: s.page_number || 1,
                   exact_quote: s.snippet || "",
                   source_type: s.source_type || "academic_web",
                   journal_name: s.journal || (s.source_type === "label" ? "FDA Drug Label" : s.source_type === "web" ? "Web Umum" : "Jurnal Ilmiah"),
@@ -815,12 +817,50 @@ export default function AppRoot() {
                   abstract_snippet: s.snippet || s.full_text,
                   evidence_level: s.evidence_level,
                 }));
+
+                const parsedSourceItems: SourceItem[] = rawSources.map((s: any, idx: number) => {
+                  const isAcademic = s.source_type === "academic_web" || s.source_type === "journal" || Boolean(s.journal);
+                  const isLabel = s.source_type === "label";
+                  const isWeb = s.source_type === "web";
+                  const type: SourceItemType = isLabel ? "label" : isAcademic ? "journal" : isWeb ? "web" : "pdf";
+                  let meta = `hal. ${s.page_number || 1}`;
+                  if (isAcademic) {
+                    meta = `${s.journal || "Jurnal"}${s.year ? " · " + s.year : ""}`;
+                  } else if (isLabel) {
+                    meta = "Label resmi FDA";
+                  } else if (isWeb) {
+                    try {
+                      meta = s.url ? new URL(s.url).hostname.replace(/^www\./, "") : "Web";
+                    } catch {
+                      meta = "Web";
+                    }
+                  }
+                  return {
+                    id: s.id ? String(s.id) : `source-${idx + 1}`,
+                    type,
+                    title: s.title || "Referensi Terverifikasi",
+                    meta,
+                    page: s.page_number || 1,
+                    doi: s.doi,
+                    url: s.url,
+                    pdf_url: s.pdf_url,
+                    snippet: s.snippet || s.full_text || "",
+                    highlights: s.snippet ? [s.snippet] : [],
+                    authors: s.authors || [],
+                    journal: s.journal,
+                    year: s.year,
+                    evidence_level: s.evidence_level,
+                    document_id: s.document_id ? String(s.document_id) : undefined,
+                  };
+                });
+
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === msgId
                       ? {
                           ...m,
                           citations: parsedSources,
+                          sources: parsedSourceItems,
                         }
                       : m
                   )
@@ -844,6 +884,7 @@ export default function AppRoot() {
                           ...m,
                           text: displayAnswer,
                           citations: eventData.citations && eventData.citations.length > 0 ? eventData.citations : (m.citations || []),
+                          sources: m.sources && m.sources.length > 0 ? m.sources : undefined,
                           figures: eventData.figures || [],
                         }
                       : m
@@ -1445,6 +1486,8 @@ export default function AppRoot() {
             handleDeleteDocument={handleDeleteDocument}
             fileInputRef={fileInputRef}
             apiBase={API_BASE}
+            chatSessions={chatSessions}
+            handleSelectSession={handleSelectSession}
           />
         )}
 

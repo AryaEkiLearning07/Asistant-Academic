@@ -10,10 +10,21 @@ import {
   Check,
   ZoomIn,
   ExternalLink,
-  Compass,
 } from "lucide-react";
-import { Message, DocumentItem, CitationItem, FigureSnippet } from "../../types";
+import {
+  Message,
+  DocumentItem,
+  CitationItem,
+  SourceItem,
+  FigureSnippet,
+  GroundingMode,
+} from "../../types";
 import { FileFormatIcon } from "../library/FileFormatIcon";
+import { SourceCards } from "./SourceCards";
+import { CitationChip } from "./CitationChip";
+import { MessageActions } from "./MessageActions";
+import { SearchProgress } from "./SearchProgress";
+import { NoResult } from "./NoResult";
 
 interface ChatBubbleProps {
   message: Message;
@@ -33,10 +44,17 @@ interface ChatBubbleProps {
   isTypingStream: boolean;
   streamingMsgId: string | null;
   format24HourDisplay: (timeStr?: string) => string;
+  isLastMessage?: boolean;
+  onSelectSource?: (source: SourceItem) => void;
+  onOpenSourcePanel?: () => void;
+  onSwitchModeAndRetry?: (mode: GroundingMode) => void;
+  onUploadDocument?: () => void;
+  onFeedback?: (msgId: string, type: "like" | "dislike") => void;
+  groundingMode?: GroundingMode;
 }
 
 /**
- * Sisipkan diagram / potongan gambar figure secara proporsional ke dalam paragraf.
+ * Sisipkan diagram / gambar figure secara proporsional ke dalam konten teks.
  */
 function injectFiguresIntoContent(text: string, figures?: FigureSnippet[]): string {
   if (!text || !figures || figures.length === 0) return text || "";
@@ -64,7 +82,7 @@ function injectFiguresIntoContent(text: string, figures?: FigureSnippet[]): stri
 
 /**
  * Normalisasi notasi LaTeX display \[ ... \] dan inline \( ... \)
- * menjadi format standar $ ... $ dan $$ ... $$ agar dirender presisi oleh KaTeX.
+ * menjadi format standar $ ... $ dan $$ ... $$ untuk KaTeX.
  */
 function preprocessLatex(text: string): string {
   if (!text) return "";
@@ -74,15 +92,14 @@ function preprocessLatex(text: string): string {
 }
 
 /**
- * Mengubah token sitasi [1], [1, 2] menjadi link markdown [#cite-1](#cite-1)
- * dengan melindungi rumus matematika dan blok kode agar tidak rusak.
+ * Mengubah token sitasi [1], [1, 2] menjadi format link internal markdown [#cite-1](#cite-1)
+ * tanpa merusak formula matematika atau blok kode.
  */
 function formatInlineCitations(text: string): string {
   if (!text) return "";
   const tokens = text.split(/(\$\$[\s\S]*?\$\$|\$[^$\n]+?\$|```[\s\S]*?```|`[^`\n]+?`)/g);
   return tokens
     .map((token, idx) => {
-      // Token ganjil adalah blok math ($...$, $$...$$) atau code block, jangan diubah
       if (idx % 2 === 1) return token;
       return token.replace(/\[(\d+(?:\s*,\s*\d+)*)\]/g, (_, nums) => {
         const list = nums.split(",").map((n: string) => n.trim());
@@ -93,8 +110,46 @@ function formatInlineCitations(text: string): string {
 }
 
 /**
- * ChatBubble - Menampilkan pesan obrolan (pengguna di kanan & asisten di kiri).
+ * Normalisasi CitationItem[] & SourceItem[] ke SourceItem[]
  */
+function normalizeToSourceItems(citations?: CitationItem[], sources?: SourceItem[]): SourceItem[] {
+  if (sources && sources.length > 0) return sources;
+  if (!citations || citations.length === 0) return [];
+  return citations.map((c, idx) => {
+    const isAcademic = c.source_type === "academic_web" || Boolean(c.journal_name);
+    const isLabel = c.source_type === "label";
+    const isWeb = c.source_type === "web";
+    const type = isLabel ? "label" : isAcademic ? "journal" : isWeb ? "web" : "pdf";
+
+    let meta = `hal. ${c.page_number || 1}`;
+    if (isAcademic) {
+      meta = `${c.journal_name || "Jurnal"}${c.publication_year ? " · " + c.publication_year : ""}`;
+    } else if (isLabel) {
+      meta = "Label resmi FDA";
+    } else if (isWeb) {
+      meta = c.url ? new URL(c.url).hostname.replace(/^www\./, "") : "Web";
+    }
+
+    return {
+      id: c.document_id || idx + 1,
+      type,
+      title: c.document_title || "Dokumen Rujukan",
+      meta,
+      page: c.page_number,
+      doi: c.doi,
+      url: c.url,
+      pdf_url: c.pdf_url,
+      snippet: c.exact_quote || c.abstract_snippet,
+      highlights: c.exact_quote ? [c.exact_quote] : [],
+      authors: c.authors,
+      journal: c.journal_name,
+      year: c.publication_year,
+      evidence_level: c.evidence_level,
+      document_id: c.document_id,
+    };
+  });
+}
+
 export const ChatBubble: React.FC<ChatBubbleProps> = ({
   message: m,
   theme,
@@ -113,49 +168,83 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
   isTypingStream,
   streamingMsgId,
   format24HourDisplay,
+  isLastMessage = false,
+  onSelectSource,
+  onOpenSourcePanel,
+  onSwitchModeAndRetry,
+  onUploadDocument,
+  onFeedback,
+  groundingMode = "library",
 }) => {
+  const isUser = m.sender === "user";
+  const sourceItems = normalizeToSourceItems(m.citations, m.sources);
+
+  // Deteksi NoResult state: jawaban menyatakan tidak ditemukan dan tanpa sitasi
+  const lowerText = (m.text || "").toLowerCase();
+  const isNoResult =
+    !isUser &&
+    !isTypingStream &&
+    sourceItems.length === 0 &&
+    (lowerText.includes("tidak ditemukan") ||
+      lowerText.includes("tidak dapat menemukan") ||
+      lowerText.includes("belum tersedia di mylibrary") ||
+      lowerText.includes("tidak ada dokumen yang cocok"));
+
+  const handleSourceSelect = (source: SourceItem) => {
+    if (onSelectSource) {
+      onSelectSource(source);
+    } else {
+      // Fallback
+      handleCitationClick({
+        document_id: String(source.id || source.document_id || ""),
+        document_title: source.title,
+        page_number: source.page || 1,
+        exact_quote: source.snippet || "",
+        source_type: source.type,
+        journal_name: source.journal,
+        publication_year: String(source.year || ""),
+        authors: source.authors,
+        doi: source.doi,
+        url: source.url,
+        pdf_url: source.pdf_url,
+        abstract_snippet: source.snippet,
+        evidence_level: source.evidence_level,
+      });
+    }
+  };
+
   return (
     <div
       className={`group/msg flex flex-col ${
-        m.sender === "user" ? "items-end" : "items-start"
-      } animate-in fade-in duration-150 space-y-1`}
+        isUser ? "items-end" : "items-start"
+      } animate-in fade-in duration-150 space-y-1 w-full`}
     >
-      {m.sender === "user" ? (
-        <>
-          <div
-            className={`group relative max-w-[85%] rounded-2xl px-4 py-2.5 text-sm md:text-[15px] leading-relaxed rounded-tr-xs shadow-2xs ${
-              theme === "dark"
-                ? "bg-[#1B2127] text-[#E6EDF2] border border-[#2A333B]"
-                : "bg-[#0F766E] text-white shadow-xs"
-            }`}
-          >
+      {isUser ? (
+        /* USER MESSAGE: bubble kanan, surface-2, radius lg (14px), max 80%, padding 12x16 */
+        <div className="flex flex-col items-end max-w-[80%]">
+          <div className="group relative rounded-lg px-4 py-3 text-[14px] leading-[1.5] bg-surface-2 text-text border border-border select-text">
             {/* Lampiran User */}
             {m.attachments && m.attachments.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-2 pt-0.5">
                 {m.attachments.map((att, attIdx) => {
-                  const isImg = att.type?.startsWith("image/") || ["png", "jpg", "jpeg", "webp"].includes(att.name.split(".").pop()?.toLowerCase() || "");
+                  const isImg =
+                    att.type?.startsWith("image/") ||
+                    ["png", "jpg", "jpeg", "webp"].includes(att.name.split(".").pop()?.toLowerCase() || "");
                   if (isImg && att.dataUrl) {
                     return (
                       <div
                         key={attIdx}
-                        className={`group relative rounded-xl overflow-hidden border shadow-sm transition cursor-pointer ${
-                          theme === "dark"
-                            ? "border-[#2A333B] bg-[#12161A] hover:border-[#34D3BE]"
-                            : "border-teal-700/60 bg-teal-800/60 hover:border-white"
-                        }`}
+                        className="group relative rounded-md overflow-hidden border border-border bg-surface hover:border-accent transition cursor-pointer"
                         onClick={() => setLightboxImage({ src: att.dataUrl!, title: att.name })}
                       >
                         <img
                           src={att.dataUrl}
                           alt={att.name}
-                          className="max-h-48 max-w-xs object-cover group-hover:scale-102 transition duration-200 rounded-lg"
+                          className="max-h-40 max-w-xs object-cover rounded-md"
                         />
-                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-1.5 text-white text-xs font-semibold backdrop-blur-[1px]">
+                        <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition flex items-center justify-center gap-1.5 text-white text-xs font-medium">
                           <ZoomIn className="w-4 h-4" />
                           <span>Perbesar</span>
-                        </div>
-                        <div className="absolute bottom-1 left-1 right-1 px-1.5 py-0.5 rounded bg-black/75 text-[10px] text-zinc-200 truncate backdrop-blur-xs">
-                          {att.name}
                         </div>
                       </div>
                     );
@@ -163,18 +252,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
                   return (
                     <div
                       key={attIdx}
-                      className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-medium border shadow-2xs ${
-                        theme === "dark"
-                          ? "bg-[#12161A] border-[#2A333B] text-[#E6EDF2]"
-                          : "bg-teal-800/80 border-teal-600 text-white"
-                      }`}
+                      className="flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[12px] bg-surface border border-border text-text"
                     >
                       <FileFormatIcon filename={att.name} fileType={att.type} size="sm" />
-                      <span className="truncate max-w-[160px] font-medium" title={att.name}>
+                      <span className="truncate max-w-[150px] font-medium" title={att.name}>
                         {att.name}
-                      </span>
-                      <span className="text-[10px] opacity-75">
-                        ({(att.size / 1024).toFixed(0)} KB)
                       </span>
                     </div>
                   );
@@ -182,35 +264,27 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
               </div>
             )}
 
-            {/* Konten Teks User / Editor */}
+            {/* Editor Pesan User */}
             {editingMessageId === m.id ? (
-              <div className="w-full min-w-[280px] sm:min-w-[420px] pt-1">
+              <div className="w-full min-w-[280px] sm:min-w-[380px] pt-1">
                 <textarea
                   value={editingMessageText}
                   onChange={(e) => setEditingMessageText(e.target.value)}
-                  className={`w-full p-2.5 text-sm rounded-xl border outline-none resize-y min-h-[90px] ${
-                    theme === "dark"
-                      ? "bg-[#12161A] text-[#E6EDF2] border-[#34D3BE]/60 focus:border-[#34D3BE]"
-                      : "bg-white text-zinc-900 border-teal-300 focus:border-teal-500"
-                  }`}
+                  className="w-full p-2.5 text-[14px] rounded-md border border-accent bg-surface text-text outline-none resize-y min-h-[80px]"
                   placeholder="Sunting pesan Anda..."
                 />
                 <div className="flex items-center justify-end gap-2 mt-2">
                   <button
                     type="button"
                     onClick={() => setEditingMessageId(null)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer border ${
-                      theme === "dark"
-                        ? "bg-transparent text-[#9AA9B5] border-[#2A333B] hover:text-white"
-                        : "bg-transparent text-zinc-700 border-zinc-200 hover:bg-zinc-100"
-                    }`}
+                    className="px-2.5 py-1 rounded-sm text-[12px] font-medium text-text-muted hover:text-text cursor-pointer"
                   >
                     Batal
                   </button>
                   <button
                     type="button"
                     onClick={() => handleSaveEditedMessage(m.id)}
-                    className="px-3.5 py-1.5 rounded-lg text-xs font-semibold bg-teal-500 hover:bg-teal-600 text-white transition cursor-pointer shadow-xs"
+                    className="px-3 py-1 rounded-sm text-[12px] font-semibold bg-accent text-white hover:bg-accent/90 transition cursor-pointer"
                   >
                     Kirim Ulang
                   </button>
@@ -221,17 +295,15 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
             )}
           </div>
 
-          {/* Action Bar User */}
+          {/* Action Bar User & Timestamp on Hover */}
           {editingMessageId !== m.id && (
-            <div className="flex items-center justify-end gap-2.5 mt-1.5 px-1 text-xs select-none">
-              <div className="flex items-center gap-2 opacity-0 group-hover/msg:opacity-100 transition-opacity duration-150">
+            <div className="flex items-center gap-2 mt-1 px-1 text-[11px] text-text-muted select-none">
+              <div className="flex items-center gap-1 opacity-0 group-hover/msg:opacity-100 transition-opacity duration-150">
                 <button
                   type="button"
                   onClick={() => handleRetryUserMessage(m)}
-                  className={`p-1 rounded-md transition cursor-pointer hover:scale-105 ${
-                    theme === "dark" ? "hover:text-[#34D3BE] text-[#9AA9B5]" : "hover:text-[#0F766E] text-zinc-500"
-                  }`}
-                  title="Generate ulang pertanyaan ini"
+                  className="p-1 rounded-sm hover:text-text hover:bg-surface-2 transition cursor-pointer"
+                  title="Generate ulang pesan"
                 >
                   <RotateCcw className="w-3.5 h-3.5" />
                 </button>
@@ -241,441 +313,210 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
                     setEditingMessageId(m.id);
                     setEditingMessageText(m.text);
                   }}
-                  className={`p-1 rounded-md transition cursor-pointer hover:scale-105 ${
-                    theme === "dark" ? "hover:text-[#34D3BE] text-[#9AA9B5]" : "hover:text-[#0F766E] text-zinc-500"
-                  }`}
-                  title="Edit pesan ini"
+                  className="p-1 rounded-sm hover:text-text hover:bg-surface-2 transition cursor-pointer"
+                  title="Sunting pesan"
                 >
                   <Edit2 className="w-3.5 h-3.5" />
                 </button>
                 <button
                   type="button"
                   onClick={() => handleCopyMessage(m.id, m.text)}
-                  className={`p-1 rounded-md transition cursor-pointer hover:scale-105 ${
-                    theme === "dark" ? "hover:text-[#34D3BE] text-[#9AA9B5]" : "hover:text-[#0F766E] text-zinc-500"
-                  }`}
+                  className="p-1 rounded-sm hover:text-text hover:bg-surface-2 transition cursor-pointer"
                   title="Salin pesan"
                 >
                   {copiedMessageId === m.id ? (
-                    <Check className="w-3.5 h-3.5 text-emerald-400" />
+                    <Check className="w-3.5 h-3.5 text-accent stroke-[2]" />
                   ) : (
                     <Copy className="w-3.5 h-3.5" />
                   )}
                 </button>
               </div>
-              <span className="text-[11px] font-mono text-[#9AA9B5] opacity-75">
+
+              {/* Timestamp hanya saat hover */}
+              <span className="opacity-0 group-hover/msg:opacity-100 transition-opacity duration-150">
                 {format24HourDisplay(m.timestamp)}
               </span>
             </div>
           )}
-        </>
+        </div>
       ) : (
-        /* Asisten Message */
-        <div
-          className={`group relative w-full text-sm md:text-[15px] leading-relaxed pt-1 ${
-            theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"
-          }`}
-        >
-          <div className="leading-relaxed selection:bg-teal-500/20">
-            {!m.text?.trim() && !isTypingStream ? (
-              <div className="flex items-center gap-2 p-3 my-1 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-400 text-xs">
-                <span>Maaf, respon tidak dapat dimuat atau terjadi gangguan koneksi ke model AI. Silakan coba kirim ulang pertanyaan Anda.</span>
-              </div>
-            ) : (
-              <>
-                {/* KARTU SUMBER DI ATAS JAWABAN (PERPLEXITY-STYLE P3-1) */}
-                {m.citations && m.citations.length > 0 && (
-                  <div className="mb-3.5 pb-2.5 border-b border-gray-200/60 dark:border-[#2A333B]">
-                    <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400 select-none">
-                      <Compass className="w-3.5 h-3.5 text-teal-500 shrink-0" />
-                      <span>Sumber Terverifikasi ({m.citations.length})</span>
-                    </div>
-                    <div className="flex gap-2.5 overflow-x-auto pb-1.5 scrollbar-thin">
-                      {m.citations.map((c, cIdx) => {
-                        const citeNum = cIdx + 1;
-                        const cleanTitle = (c.document_title || "Sumber Rujukan")
-                          .replace(/\.pdf$/i, "")
-                          .replace(/[-_]/g, " ");
-                        const sourceSite =
-                          c.journal_name ||
-                          (c.source_type === "label"
-                            ? "FDA Drug Label"
-                            : c.source_type === "web"
-                            ? "Web"
-                            : "MyLibrary");
-                        const yearStr = c.publication_year ? `(${c.publication_year})` : "";
+        /* ASSISTANT MESSAGE: jawaban 16px / line-height 1.7, kolom baca tenang ala Claude/Perplexity */
+        <div className="w-full text-[16px] leading-[1.7] text-text font-sans pt-1">
+          {/* Status Progres Pencarian (SearchProgress) jika ada */}
+          {m.searchProgress && (
+            <SearchProgress
+              steps={m.searchProgress.steps}
+              isFinished={m.searchProgress.isFinished}
+            />
+          )}
 
-                        let evLabel = "Jurnal";
-                        if (c.evidence_level) {
-                          const ev = c.evidence_level.toLowerCase();
-                          if (ev.includes("meta_analysis")) evLabel = "Meta-Analisis";
-                          else if (ev.includes("systematic_review")) evLabel = "Systematic Review";
-                          else if (ev.includes("rct") || ev.includes("clinical")) evLabel = "RCT";
-                          else if (ev.includes("drug_label") || c.source_type === "label") evLabel = "Label FDA";
-                          else if (ev.includes("observational")) evLabel = "Observasional";
-                          else if (ev.includes("guideline")) evLabel = "Guideline";
-                          else if (ev.includes("review")) evLabel = "Review";
-                          else if (ev.includes("web") || c.source_type === "web") evLabel = "Web";
-                          else if (ev.includes("document") || c.source_type === "document") evLabel = "Dokumen";
-                        } else if (c.source_type === "label") {
-                          evLabel = "Label FDA";
-                        } else if (c.source_type === "web") {
-                          evLabel = "Web";
-                        } else if (c.source_type === "document") {
-                          evLabel = "Dokumen";
-                        }
+          {/* Kartu Sumber di Atas Jawaban (SourceCards) */}
+          {sourceItems.length > 0 && (
+            <SourceCards
+              sources={sourceItems}
+              onSelectSource={handleSourceSelect}
+              onOpenSourcePanel={onOpenSourcePanel}
+            />
+          )}
 
-                        const handleCardClick = (e: React.MouseEvent) => {
-                          e.preventDefault();
-                          if (c.url) {
-                            window.open(c.url, "_blank", "noopener,noreferrer");
-                          } else {
-                            handleCitationClick(c);
-                          }
-                        };
-
-                        return (
-                          <div
-                            key={cIdx}
-                            onClick={handleCardClick}
-                            className={`group/card flex flex-col justify-between w-52 min-w-[208px] p-2.5 rounded-xl border text-left cursor-pointer transition-all duration-150 hover:-translate-y-0.5 shadow-2xs ${
-                              theme === "dark"
-                                ? "bg-[#161B21] border-[#2A333B] hover:border-[#34D3BE] hover:bg-[#1B2127]"
-                                : "bg-white border-gray-200 hover:border-teal-500 hover:bg-teal-50/30"
-                            }`}
-                            title={`Klik untuk membuka sumber rujukan:\n${cleanTitle}\n${c.url || ""}`}
-                          >
-                            <div>
-                              <div className="flex items-center justify-between gap-1 mb-1">
-                                <span
-                                  className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold ${
-                                    theme === "dark" ? "bg-[#34D3BE] text-[#12161A]" : "bg-[#0F766E] text-white"
-                                  }`}
-                                >
-                                  {citeNum}
-                                </span>
-                                <span
-                                  className={`text-[9.5px] px-1.5 py-0.5 rounded font-bold truncate ${
-                                    theme === "dark"
-                                      ? "bg-[#34D3BE]/15 text-[#34D3BE]"
-                                      : "bg-teal-100 text-[#0F766E]"
-                                  }`}
-                                >
-                                  {evLabel}
-                                </span>
-                              </div>
-                              <p
-                                className={`text-xs font-semibold line-clamp-2 leading-tight mb-1 ${
-                                  theme === "dark"
-                                    ? "text-gray-200 group-hover/card:text-white"
-                                    : "text-gray-800 group-hover/card:text-teal-900"
-                                }`}
-                              >
-                                {cleanTitle}
-                              </p>
-                            </div>
-                            <div className="flex items-center justify-between text-[10px] opacity-75 mt-1 pt-1 border-t border-gray-200/40 dark:border-gray-800/40">
-                              <span className="truncate max-w-[130px] font-medium" title={sourceSite}>
-                                {sourceSite} {yearStr}
-                              </span>
-                              {c.url ? (
-                                <ExternalLink className="w-3 h-3 shrink-0 opacity-60 group-hover/card:opacity-100 transition" />
-                              ) : null}
-                            </div>
+          {/* No Result State Card */}
+          {isNoResult ? (
+            <NoResult
+              currentMode={groundingMode}
+              onSwitchModeAndRetry={onSwitchModeAndRetry}
+              onUploadDocument={onUploadDocument}
+              customMessage={m.text}
+            />
+          ) : (
+            /* Jawaban Asisten (Markdown Rendered) */
+            <div className="selection:bg-accent-soft selection:text-text">
+              <ReactMarkdown
+                remarkPlugins={[remarkGfm, remarkMath]}
+                rehypePlugins={[rehypeKatex]}
+                components={{
+                  img: ({ src, alt }: any) => {
+                    if (src && typeof src === "string" && src.startsWith("#fig-")) {
+                      const figIdx = parseInt(src.replace("#fig-", ""), 10);
+                      const fig = m.figures && m.figures[figIdx];
+                      if (!fig) return null;
+                      const linkedDoc = documents.find((d) => d.id === fig.document_id);
+                      const docTitle = linkedDoc?.title || "Dokumen Referensi";
+                      return (
+                        <figure className="my-5 flex flex-col items-center justify-center select-none max-w-lg mx-auto">
+                          <div className="rounded-md overflow-hidden border border-border bg-surface">
+                            <img
+                              src={`${apiBase}${fig.image_url}`}
+                              alt={fig.caption || `Gambar ${figIdx + 1}`}
+                              className="max-h-72 w-auto object-contain block"
+                              loading="lazy"
+                            />
                           </div>
-                        );
-                      })}
+                          <figcaption
+                            onClick={() =>
+                              handleSourceSelect({
+                                id: fig.document_id,
+                                type: "pdf",
+                                title: docTitle,
+                                meta: `hal. ${fig.page_number}`,
+                                page: fig.page_number,
+                                snippet: fig.caption,
+                              })
+                            }
+                            className="mt-2 text-center cursor-pointer hover:underline text-[12px] text-text-muted"
+                          >
+                            <span className="font-semibold text-text mr-1">Gambar {figIdx + 1}.</span>
+                            <span>{fig.caption || `Halaman ${fig.page_number}`}</span>
+                          </figcaption>
+                        </figure>
+                      );
+                    }
+                    return <img src={src} alt={alt} className="rounded-md my-2 max-w-full" />;
+                  },
+                  h1: ({ node, ...props }) => (
+                    <h1 className="text-[24px] font-semibold text-text mt-5 mb-2.5 tracking-tight" {...props} />
+                  ),
+                  h2: ({ node, ...props }) => (
+                    <h2 className="text-[18px] font-semibold text-text mt-4 mb-2 tracking-tight" {...props} />
+                  ),
+                  h3: ({ node, ...props }) => (
+                    <h3 className="text-[16px] font-semibold text-text mt-3.5 mb-1.5" {...props} />
+                  ),
+                  p: ({ node, ...props }) => (
+                    <p className="my-2 text-[16px] leading-[1.7]" {...props} />
+                  ),
+                  ul: ({ node, ...props }) => (
+                    <ul className="list-disc list-outside ml-5 my-2 space-y-1 marker:text-text-muted" {...props} />
+                  ),
+                  ol: ({ node, ...props }) => (
+                    <ol className="list-decimal list-outside ml-5 my-2 space-y-1.5 marker:text-text-muted" {...props} />
+                  ),
+                  li: ({ node, ...props }) => (
+                    <li className="leading-[1.7] pl-1" {...props} />
+                  ),
+                  blockquote: ({ node, ...props }) => (
+                    <blockquote
+                      className="border-l-2 border-border pl-3.5 my-2.5 text-text-muted italic"
+                      {...props}
+                    />
+                  ),
+                  table: ({ node, ...props }) => (
+                    <div className="overflow-x-auto my-3 rounded-md border border-border">
+                      <table className="w-full text-[13px] text-left border-collapse" {...props} />
                     </div>
-                  </div>
-                )}
-                <ReactMarkdown
-                  remarkPlugins={[remarkGfm, remarkMath]}
-                  rehypePlugins={[rehypeKatex]}
-                  components={{
-                img: ({ src, alt }: any) => {
-                  if (src && typeof src === "string" && src.startsWith("#fig-")) {
-                    const figIdx = parseInt(src.replace("#fig-", ""), 10);
-                    const fig = m.figures && m.figures[figIdx];
-                    if (!fig) return null;
-                    const linkedDoc = documents.find((d) => d.id === fig.document_id);
-                    const docTitle = linkedDoc?.title || "Dokumen Referensi";
-                    const triggerOpenPdf = (e: React.MouseEvent) => {
-                      e.preventDefault();
-                      e.stopPropagation();
-                      handleCitationClick({
-                        document_id: fig.document_id,
-                        document_title: docTitle,
-                        page_number: fig.page_number,
-                        exact_quote: fig.caption || `Gambar Halaman ${fig.page_number}`,
-                        source_type: "local_pdf",
-                      });
-                    };
+                  ),
+                  th: ({ node, ...props }) => (
+                    <th className="border-b border-border bg-surface-2 px-3 py-2 font-semibold text-text" {...props} />
+                  ),
+                  td: ({ node, ...props }) => (
+                    <td className="border-b border-border px-3 py-2 text-text" {...props} />
+                  ),
+                  code: ({ node, className, children, ...props }: any) => {
+                    const isInline = !className && typeof children === "string" && !children.includes("\n");
+                    if (isInline) {
+                      return (
+                        <code
+                          className="font-mono text-[13px] px-1.5 py-0.5 rounded-sm bg-surface-2 text-accent border border-border"
+                          {...props}
+                        >
+                          {children}
+                        </code>
+                      );
+                    }
                     return (
-                      <figure className="my-5 flex flex-col items-center justify-center select-none max-w-lg mx-auto">
-                        <div
-                          className={`rounded-xl overflow-hidden border shadow-2xs ${
-                            theme === "dark" ? "bg-[#181E24] border-[#2A333B]" : "bg-white border-[#E2E8F0]"
-                          }`}
-                        >
-                          <img
-                            src={`${apiBase}${fig.image_url}`}
-                            alt={fig.caption || `Gambar ${figIdx + 1}`}
-                            className="max-h-72 sm:max-h-80 w-auto object-contain block"
-                            loading="lazy"
-                          />
-                        </div>
-                        <figcaption
-                          onClick={triggerOpenPdf}
-                          className="mt-2 text-center cursor-pointer transition max-w-md group/cap"
-                          title={`Klik referensi untuk membuka ${docTitle} pada Halaman ${fig.page_number}`}
-                        >
-                          <div className={`text-xs font-semibold ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`}>
-                            <span className={`font-bold mr-1 ${theme === "dark" ? "text-[#34D3BE]" : "text-[#0F766E]"}`}>
-                              Gambar {figIdx + 1}.
-                            </span>
-                            <span>{fig.caption || `Ilustrasi pada halaman ${fig.page_number}`}</span>
-                          </div>
-                          <div
-                            className={`text-[11px] mt-0.5 flex items-center justify-center gap-1 group-hover/cap:underline ${
-                              theme === "dark"
-                                ? "text-[#9AA9B5] group-hover/cap:text-[#34D3BE]"
-                                : "text-[#5B6B78] group-hover/cap:text-[#0F766E]"
-                            }`}
-                          >
-                            <span>Sumber: {docTitle}, Halaman {fig.page_number}</span>
-                            <ExternalLink className="w-2.5 h-2.5" />
-                          </div>
-                        </figcaption>
-                      </figure>
+                      <pre className="border border-border bg-surface-2 rounded-md p-3.5 my-3 overflow-x-auto font-mono text-[13px] text-text">
+                        <code className={className} {...props}>
+                          {children}
+                        </code>
+                      </pre>
                     );
-                  }
-                  return <img src={src} alt={alt} className="rounded-lg my-2 max-w-full" />;
-                },
-                strong: ({ node, ...props }) => (
-                  <strong className={`font-semibold ${theme === "dark" ? "text-white" : "text-[#12202B]"}`} {...props} />
-                ),
-                b: ({ node, ...props }) => (
-                  <b className={`font-semibold ${theme === "dark" ? "text-white" : "text-[#12202B]"}`} {...props} />
-                ),
-                em: ({ node, ...props }) => (
-                  <em className={`italic ${theme === "dark" ? "text-[#34D3BE]" : "text-[#0F766E]"}`} {...props} />
-                ),
-                h1: ({ node, ...props }) => (
-                  <h1 className={`text-xl font-bold mt-4 mb-2 tracking-tight font-claude-serif ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`} {...props} />
-                ),
-                h2: ({ node, ...props }) => (
-                  <h2 className={`text-lg font-bold mt-3.5 mb-2 tracking-tight font-claude-serif ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`} {...props} />
-                ),
-                h3: ({ node, ...props }) => (
-                  <h3 className={`text-base font-bold mt-3 mb-1.5 font-claude-serif ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`} {...props} />
-                ),
-                p: ({ node, ...props }) => (
-                  <p className={`my-2 leading-relaxed ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`} {...props} />
-                ),
-                ul: ({ node, ...props }) => (
-                  <ul className={`list-disc list-outside ml-5 my-2 space-y-1 ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`} {...props} />
-                ),
-                ol: ({ node, ...props }) => (
-                  <ol className={`list-decimal list-outside ml-5 my-2 space-y-1.5 ${theme === "dark" ? "text-[#E6EDF2]" : "text-[#12202B]"}`} {...props} />
-                ),
-                li: ({ node, ...props }) => (
-                  <li className="leading-relaxed pl-1 marker:text-teal-500" {...props} />
-                ),
-                pre: ({ node, ...props }) => (
-                  <pre
-                    className={`border rounded-xl p-3.5 my-3 overflow-x-auto font-mono text-xs ${
-                      theme === "dark"
-                        ? "bg-[#12161A] border-[#2A333B] text-[#E6EDF2]"
-                        : "bg-slate-900 border-slate-800 text-slate-100"
-                    }`}
-                    {...props}
-                  />
-                ),
-                code: ({ node, className, children, ...props }: any) => {
-                  const isInline = !className && typeof children === "string" && !children.includes("\n");
-                  if (isInline) {
+                  },
+                  a: ({ href, children, ...props }: any) => {
+                    // Check if it's an inline citation token like [#cite-1](#cite-1)
+                    if (href && typeof href === "string" && href.startsWith("#cite-")) {
+                      const citeNum = parseInt(href.replace("#cite-", ""), 10);
+                      const targetSource = sourceItems[citeNum - 1];
+                      return (
+                        <CitationChip
+                          index={citeNum}
+                          source={targetSource}
+                          onClick={() => targetSource && handleSourceSelect(targetSource)}
+                        />
+                      );
+                    }
                     return (
-                      <code
-                        className={`font-mono text-[13px] px-1.5 py-0.5 rounded border ${
-                          theme === "dark"
-                            ? "bg-[#1B2127] text-[#34D3BE] border-[#2A333B]"
-                            : "bg-teal-50 text-[#0F766E] border-teal-200"
-                        }`}
+                      <a
+                        href={href}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-accent hover:underline font-medium"
                         {...props}
                       >
                         {children}
-                      </code>
+                      </a>
                     );
-                  }
-                  return <code className={className} {...props}>{children}</code>;
-                },
-                blockquote: ({ node, ...props }) => (
-                  <blockquote
-                    className={`border-l-2 pl-3.5 my-2 italic ${
-                      theme === "dark" ? "text-[#9AA9B5] border-[#34D3BE]" : "text-[#5B6B78] border-[#0F766E]"
-                    }`}
-                    {...props}
-                  />
-                ),
-                table: ({ node, ...props }) => (
-                  <div className={`overflow-x-auto my-3 rounded-lg border ${theme === "dark" ? "border-[#2A333B]" : "border-[#DCE3E8]"}`}>
-                    <table className="w-full text-xs text-left border-collapse" {...props} />
-                  </div>
-                ),
-                th: ({ node, ...props }) => (
-                  <th
-                    className={`border-b px-3 py-2 font-bold ${
-                      theme === "dark"
-                        ? "border-[#2A333B] bg-[#1B2127] text-[#E6EDF2]"
-                        : "border-[#DCE3E8] bg-[#F7F9FA] text-[#12202B]"
-                    }`}
-                    {...props}
-                  />
-                ),
-                td: ({ node, ...props }) => (
-                  <td
-                    className={`border-b px-3 py-2 ${
-                      theme === "dark" ? "border-[#2A333B]" : "border-[#DCE3E8]"
-                    }`}
-                    {...props}
-                  />
-                ),
-                a: ({ href, children, ...props }: any) => {
-                  if (href && typeof href === "string" && href.startsWith("#cite-")) {
-                    const citeNum = parseInt(href.replace("#cite-", ""), 10);
-                    const citeIdx = citeNum - 1;
-                    const citation = m.citations && m.citations[citeIdx];
-                    const cleanDocTitle = citation?.document_title
-                      ? citation.document_title.replace(/\.pdf$/i, "").replace(/[-_]/g, " ").slice(0, 24)
-                      : "";
-                    const isAcademic = citation?.source_type === "academic_web" || Boolean(citation?.journal_name);
-                    const labelText = isAcademic
-                      ? `${citation?.journal_name || "Jurnal"} (${citation?.publication_year || "2024"})`
-                      : cleanDocTitle;
-                    return (
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (citation?.url) {
-                            window.open(citation.url, "_blank", "noopener,noreferrer");
-                          } else if (citation) {
-                            handleCitationClick(citation);
-                          }
-                        }}
-                        title={
-                          citation
-                            ? isAcademic
-                              ? `JURNAL: ${citation.document_title}\nPublikasi: ${citation.journal_name} (${citation.publication_year})\nDOI: ${citation.doi || '-'}\n\nKutipan Bukti Empiris:\n"${citation.exact_quote}"`
-                              : `Dokumen: ${citation.document_title}\nHalaman: ${citation.page_number}\n\nKutipan:\n"${citation.exact_quote}"`
-                            : `Rujukan [${citeNum}]`
-                        }
-                        className={`inline-flex items-center gap-1.5 max-w-[260px] h-[21px] px-2 mx-1 text-[11px] font-semibold rounded-md border transition-all cursor-pointer align-baseline select-none -translate-y-0.5 shadow-2xs group ${
-                          theme === "dark"
-                            ? "bg-[#1B2127] text-[#E6EDF2] border-[#2A333B] hover:bg-[#34D3BE] hover:text-[#12161A] hover:border-[#34D3BE]"
-                            : "bg-teal-50/80 text-teal-900 border-teal-200 hover:bg-[#0F766E] hover:text-white hover:border-[#0F766E]"
-                        }`}
-                      >
-                        <span
-                          className={`w-3.5 h-3.5 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${
-                            theme === "dark"
-                              ? "bg-[#34D3BE] text-[#12161A] group-hover:bg-[#12161A] group-hover:text-[#34D3BE]"
-                              : "bg-[#0F766E] text-white group-hover:bg-white group-hover:text-[#0F766E]"
-                          }`}
-                        >
-                          {citeNum}
-                        </span>
-                        {labelText && (
-                          <span
-                            className={`truncate text-[10.5px] ${
-                              theme === "dark" ? "text-[#9AA9B5] group-hover:text-[#12161A]" : "text-teal-800 group-hover:text-white"
-                            }`}
-                          >
-                            {labelText}
-                          </span>
-                        )}
-                        {!isAcademic && citation && (
-                          <span
-                            className={`text-[10px] font-bold shrink-0 ${
-                              theme === "dark" ? "text-[#34D3BE] group-hover:text-[#12161A]" : "text-[#0F766E] group-hover:text-white"
-                            }`}
-                          >
-                            hlm.{citation.page_number}
-                          </span>
-                        )}
-                        {isAcademic && (
-                          <span
-                            className={`text-[9px] font-bold px-1 py-0.2 rounded shrink-0 ${
-                              theme === "dark"
-                                ? "bg-[#34D3BE]/20 text-[#34D3BE] group-hover:bg-[#12161A] group-hover:text-[#34D3BE]"
-                                : "bg-teal-200/80 text-teal-900 group-hover:bg-white group-hover:text-[#0F766E]"
-                            }`}
-                          >
-                            Jurnal
-                          </span>
-                        )}
-                      </button>
-                    );
-                  }
-                  return (
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className={theme === "dark" ? "text-[#34D3BE] hover:underline font-semibold" : "text-[#0F766E] hover:underline font-semibold"}
-                      {...props}
-                    >
-                      {children}
-                    </a>
-                  );
-                },
-              }}
-            >
-              {formatInlineCitations(preprocessLatex(injectFiguresIntoContent(m.text, m.figures)))}
-            </ReactMarkdown>
-            </>
-            )}
-            {isTypingStream && streamingMsgId === m.id && (
-              <span
-                className={`inline-block w-1.5 h-4 ml-1 rounded-xs animate-pulse align-middle ${
-                  theme === "dark" ? "bg-[#34D3BE]" : "bg-[#0F766E]"
-                }`}
-              />
-            )}
-          </div>
+                  },
+                }}
+              >
+                {formatInlineCitations(preprocessLatex(injectFiguresIntoContent(m.text, m.figures)))}
+              </ReactMarkdown>
+            </div>
+          )}
 
-          {/* Action Bar Assistant (Salin & Timestamp 24 Jam) */}
-          <div className="flex items-center justify-between w-full mt-3 pt-1 text-xs select-none">
-            <button
-              type="button"
-              disabled={!m.text?.trim()}
-              onClick={() => handleCopyMessage(m.id, m.text)}
-              className={`p-1 rounded-md transition flex items-center gap-1.5 ${
-                !m.text?.trim()
-                  ? "opacity-40 cursor-not-allowed"
-                  : theme === "dark"
-                  ? "hover:text-[#34D3BE] text-[#9AA9B5] cursor-pointer hover:scale-105"
-                  : "hover:text-[#0F766E] text-zinc-500 cursor-pointer hover:scale-105"
-              }`}
-              title={m.text?.trim() ? "Salin respon asisten" : "Tidak ada teks untuk disalin"}
-            >
-              {copiedMessageId === m.id ? (
-                <>
-                  <Check className="w-3.5 h-3.5 text-emerald-400" />
-                  <span className="text-[11px] text-emerald-500 font-semibold">Tersalin</span>
-                </>
-              ) : (
-                <>
-                  <Copy className="w-3.5 h-3.5" />
-                  <span className="text-[11px]">Salin</span>
-                </>
-              )}
-            </button>
-            <span className="text-[11px] font-mono text-[#9AA9B5] opacity-80 ml-auto">
-              {format24HourDisplay(m.timestamp)}
-            </span>
-          </div>
+          {/* Typing Stream Indicator */}
+          {isTypingStream && streamingMsgId === m.id && (
+            <span className="inline-block w-1.5 h-4 ml-1 rounded-xs bg-accent animate-pulse align-middle" />
+          )}
+
+          {/* Aksi Jawaban (Salin, Regenerasi, 👍/👎, Sumber) */}
+          <MessageActions
+            messageText={m.text}
+            isLastMessage={isLastMessage}
+            onRegenerate={() => handleRetryUserMessage(m)}
+            onOpenSources={onOpenSourcePanel}
+            hasSources={sourceItems.length > 0}
+            onFeedback={(type) => onFeedback && onFeedback(m.id, type)}
+            currentFeedback={m.feedback}
+          />
         </div>
       )}
     </div>

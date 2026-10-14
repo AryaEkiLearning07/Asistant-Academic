@@ -1,6 +1,19 @@
 import type { Metadata } from "next";
+import { Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import "katex/dist/katex.min.css";
+
+const inter = Inter({
+  subsets: ["latin"],
+  variable: "--font-inter",
+  display: "swap",
+});
+
+const jetbrainsMono = JetBrains_Mono({
+  subsets: ["latin"],
+  variable: "--font-mono",
+  display: "swap",
+});
 
 export const metadata: Metadata = {
   title: "EPIONA — Academic Literature Research Assistant",
@@ -13,8 +26,9 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="id">
-      <body className="antialiased min-h-screen flex flex-col">{children}</body>
+    <html lang="id" className={`${inter.variable} ${jetbrainsMono.variable}`}>
+      <body className="antialiased min-h-screen flex flex-col font-sans bg-bg text-text">{children}</body>
     </html>
   );
 }
+

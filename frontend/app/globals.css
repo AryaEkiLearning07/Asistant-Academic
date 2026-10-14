@@ -2,49 +2,79 @@
 @tailwind components;
 @tailwind utilities;
 
-@import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,400..700;1,6..72,400..700&family=Inter:wght@400;500;600;700;800&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:ital,opsz,wght@0,8..60,400..700;1,8..60,400..700&display=swap');
 
 :root {
-  /* Mode Terang (Default) Sesuai Palet Resmi */
-  --bg-app: #F7F9FA;
+  /* Epiona UI Redesign Design Tokens (Light Mode) */
+  --bg: #FAFAF9;
+  --surface: #FFFFFF;
+  --surface-2: #F3F4F2;
+  --border: #E5E7E3;
+  --text: #17191C;
+  --text-muted: #5F6670;
+  --accent: #0F766E;
+  --accent-soft: #CCFBF1;
+  --ev-jurnal: #2563EB;
+  --ev-label: #7C3AED;
+  --ev-web: #6B7280;
+  --danger: #DC2626;
+
+  /* Legacy aliases for backward compatibility */
+  --bg-app: #FAFAF9;
   --bg-surface: #FFFFFF;
-  --text-main: #12202B;
-  --text-muted: #5B6B78;
-  --border-color: #DCE3E8;
+  --text-main: #17191C;
+  --border-color: #E5E7E3;
   --color-teal: #0F766E;
-  --color-coral: #E8684A;
+  --color-coral: #DC2626;
 }
 
 .dark {
-  /* Mode Gelap Sesuai Palet Resmi */
-  --bg-app: #12161A;
-  --bg-surface: #1B2127;
-  --text-main: #E6EDF2;
-  --text-muted: #9AA9B5;
-  --border-color: #2A333B;
-  --color-teal: #34D3BE;
-  --color-coral: #F08A70;
+  /* Epiona UI Redesign Design Tokens (Dark Mode) */
+  --bg: #0F1115;
+  --surface: #16191F;
+  --surface-2: #1D2128;
+  --border: #2A2F37;
+  --text: #E8EAED;
+  --text-muted: #9AA1AB;
+  --accent: #2DD4BF;
+  --accent-soft: #134E4A;
+  --ev-jurnal: #60A5FA;
+  --ev-label: #A78BFA;
+  --ev-web: #9CA3AF;
+  --danger: #F87171;
+
+  /* Legacy aliases */
+  --bg-app: #0F1115;
+  --bg-surface: #16191F;
+  --text-main: #E8EAED;
+  --border-color: #2A2F37;
+  --color-teal: #2DD4BF;
+  --color-coral: #F87171;
 }
 
 body {
-  color: var(--text-main);
-  background: var(--bg-app);
-  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: var(--text);
+  background-color: var(--bg);
+  font-family: var(--font-inter), "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
 }
 
-/* Claude Editorial Serif (Tiempos / Newsreader) */
-.font-claude-serif {
-  font-family: "Newsreader", Georgia, Cambria, "Times New Roman", serif;
+/* Jawaban opsional serif / editorial */
+.font-answer-serif {
+  font-family: "Source Serif 4", Georgia, Cambria, "Times New Roman", serif;
   font-feature-settings: "pnum", "lnum";
 }
 
-/* Claude Clean Sans-Serif (Styrene / Inter) */
-.font-claude-sans, .font-epiona-sans {
-  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+.font-claude-serif {
+  font-family: var(--font-inter), "Inter", system-ui, sans-serif;
 }
 
-/* Custom subtle scrollbar */
+.font-claude-sans, .font-epiona-sans {
+  font-family: var(--font-inter), "Inter", system-ui, sans-serif;
+}
+
+/* Discrete Scrollbar without glow */
 ::-webkit-scrollbar {
   width: 5px;
   height: 5px;
@@ -53,9 +83,10 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(150, 150, 150, 0.25);
-  border-radius: 4px;
+  background: rgba(140, 145, 155, 0.22);
+  border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(150, 150, 150, 0.45);
+  background: rgba(140, 145, 155, 0.38);
 }
+

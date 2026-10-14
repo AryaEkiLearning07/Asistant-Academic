@@ -22,6 +22,27 @@ export interface CitationItem {
   evidence_level?: string;
 }
 
+export type SourceItemType = "pdf" | "journal" | "web" | "label";
+
+export interface SourceItem {
+  id: string | number;
+  type: SourceItemType;
+  title: string;
+  meta: string;
+  page?: number;
+  total_pages?: number;
+  doi?: string;
+  url?: string;
+  pdf_url?: string;
+  snippet?: string;
+  highlights?: string[];
+  authors?: string[];
+  journal?: string;
+  year?: string | number;
+  evidence_level?: string;
+  document_id?: string;
+}
+
 export type GroundingMode = "library" | "academic" | "web";
 
 export interface FigureSnippet {
@@ -39,14 +60,25 @@ export interface MessageAttachment {
   dataUrl?: string | null;
 }
 
+export interface SearchProgressStep {
+  text: string;
+  status: "pending" | "running" | "done";
+}
+
 export interface Message {
   id: string;
   sender: "user" | "assistant";
   text: string;
   citations?: CitationItem[];
+  sources?: SourceItem[];
   figures?: FigureSnippet[];
   attachments?: MessageAttachment[];
   timestamp: string;
+  feedback?: "like" | "dislike" | null;
+  searchProgress?: {
+    steps: SearchProgressStep[];
+    isFinished: boolean;
+  };
 }
 
 export interface DocumentItem {
@@ -63,6 +95,8 @@ export interface DocumentItem {
 }
 
 export type ModelPreference = "gemini-2.0-flash" | "claude-3-5-sonnet";
+export type ModelTierOption = "auto" | "fast" | "pro" | "best";
+
 
 export interface UserProfile {
   id: string;
