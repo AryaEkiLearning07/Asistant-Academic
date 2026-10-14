@@ -1,6 +1,6 @@
 import re
 from typing import List, Dict, Optional
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse
 from app.search.models import SearchResult
 
 # Bobot Hirarki Bukti Ilmiah Evidence-Based Medicine (EBM)
@@ -30,10 +30,8 @@ def normalize_url(url: Optional[str]) -> Optional[str]:
         return None
     try:
         parsed = urlparse(url.strip().lower())
-        # Bersihkan trailing slash dan skema
         netloc = parsed.netloc.replace("www.", "")
         path = parsed.path.rstrip("/")
-        # Bersihkan parameter pelacak
         return f"{netloc}{path}"
     except Exception:
         return url.strip().lower()
@@ -43,27 +41,83 @@ def normalize_title(title: str) -> str:
         return ""
     return re.sub(r"[^\w\s]", "", title.lower()).strip()
 
-def calculate_relevance_score(query: str, title: str, snippet: str) -> float:
+def calculate_relevance_score(
+    query: str,
+    title: str,
+    snippet: str,
+    full_text: Optional[str] = None,
+    key_entities: Optional[List[str]] = None
+) -> float:
     """
-    Menghitung skor relevansi berbasis kecocokan istilah kueri terhadap judul dan snippet.
-    Judul diberi bobot 2.5x lebih tinggi dibandingkan cuplikan teks.
+    Menghitung skor relevansi berbasis:
+    1. Kecocokan entitas kunci (key drug entities) pada judul dan cuplikan/abstrak.
+       - Jika query memuat entitas obat dan naskah TIDAK memuat entitas tersebut, diberi penalti keras (0.01).
+       - Jika naskah memuat multi-entitas (misal warfarin DAN aspirin), diberi bonus ko-okurensi tinggi.
+    2. Kecocokan istilah kueri (termasuk padanan ilmiah) terhadap judul (bobot 3.0x) dan cuplikan (1.5x).
     """
     if not query:
         return 0.5
 
-    terms = set(re.findall(r"\b[a-zA-Z0-9-]{3,}\b", query.lower()))
-    if not terms:
-        return 0.5
+    t_text = (title or "").lower()
+    s_text = f"{(snippet or '')} {(full_text or '')}".lower()
+    combined_doc = f"{t_text} {s_text}"
 
-    t_words = set(re.findall(r"\b[a-zA-Z0-9-]{3,}\b", (title or "").lower()))
-    s_words = set(re.findall(r"\b[a-zA-Z0-9-]{3,}\b", (snippet or "").lower()))
+    # Ambil entitas kunci obat jika ada
+    active_entities = key_entities
+    if active_entities is None:
+        try:
+            from app.search.router import SearchRouter
+            active_entities = SearchRouter.extract_drug_entities(query)
+        except Exception:
+            active_entities = []
+
+    # 1. Evaluasi Entitas Kunci
+    entity_score = 0.0
+    if active_entities:
+        matched_in_title = [e for e in active_entities if re.search(rf"\b{re.escape(e)}\b", t_text)]
+        matched_in_doc = [e for e in active_entities if re.search(rf"\b{re.escape(e)}\b", combined_doc)]
+
+        num_matched = len(matched_in_doc)
+        if num_matched == 0:
+            # Tidak memuat satupun entitas obat yang dicari -> Penalti drastis!
+            return 0.01
+
+        # Jika query interaksi / multi-obat (>= 2 entitas):
+        if len(active_entities) >= 2:
+            if num_matched >= 2:
+                # Memuat seluruh entitas kunci (misal warfarin dan aspirin)
+                entity_score = 0.45 + (0.20 if len(matched_in_title) >= 1 else 0.0)
+            else:
+                # Hanya memuat 1 dari 2 entitas obat
+                entity_score = 0.15
+        else:
+            # Single entity query
+            entity_score = 0.35 + (0.15 if len(matched_in_title) >= 1 else 0.0)
+
+    # 2. Token Matching (Query Terms + Translated Equivalents)
+    try:
+        from app.search.router import SearchRouter
+        en_query = SearchRouter.translate_to_english_fallback(query)
+    except Exception:
+        en_query = query
+
+    terms = set(re.findall(r"\b[a-zA-Z0-9-]{3,}\b", f"{query} {en_query}".lower()))
+    stop = {"what", "is", "are", "the", "for", "with", "and", "dari", "pada", "yang", "dalam", "dengan"}
+    terms = {t for t in terms if t not in stop}
+
+    if not terms:
+        return max(0.05, entity_score)
+
+    t_words = set(re.findall(r"\b[a-zA-Z0-9-]{3,}\b", t_text))
+    s_words = set(re.findall(r"\b[a-zA-Z0-9-]{3,}\b", s_text))
 
     title_matches = len(terms.intersection(t_words))
     snippet_matches = len(terms.intersection(s_words))
 
-    # Rasio pencocokan terhadap total term kueri
-    raw_score = (title_matches * 2.5 + snippet_matches * 1.0) / (len(terms) * 3.5)
-    return min(1.0, max(0.05, raw_score))
+    term_ratio = (title_matches * 3.0 + snippet_matches * 1.5) / (len(terms) * 4.0)
+
+    final_score = entity_score + term_ratio
+    return min(1.0, max(0.02, final_score))
 
 def calculate_recency_bonus(year: Optional[int]) -> float:
     """Bonus kebaruan publikasi untuk mendukung riset mutakhir."""
@@ -133,31 +187,84 @@ def rank_and_select(
     query: str,
     results: List[SearchResult],
     min_count: int = 6,
-    max_count: int = 10
+    max_count: int = 10,
+    key_entities: Optional[List[str]] = None
 ) -> List[SearchResult]:
     """
     Perankingan komprehensif:
-    1. Deduplikasi berbasis DOI/URL/Judul
-    2. Perhitungan skor total = (Relevansi * 0.5) + Bobot Evidence EBM + Bonus Kebaruan
-    3. Pengurutan descending dan pemotongan top 6 - 10 sumber
-    4. Penetapan result_id sitasi 1-based [1..N]
+    1. Deduplikasi naskah berbasis DOI, URL, dan Judul.
+    2. Deteksi entitas kunci: Filter/turunkan hasil yang tidak memuat entitas obat kunci.
+    3. Reranker relevansi atas judul + abstrak terhadap pertanyaan asli.
+    4. Perhitungan skor total:
+       Skor = (Relevansi * 0.55) + (Effective EBM Weight * 0.30) + (Recency Bonus * 0.15).
+       EBM Weight hanya diberikan secara penuh jika artikel relevan (rel >= 0.20).
+    5. Pemotongan top min_count..max_count dan penetapan result_id [1..N].
     """
     if not results:
         return []
 
     unique_results = deduplicate_results(results)
 
+    # Deteksi entitas kunci jika belum diberikan
+    active_entities = key_entities
+    if active_entities is None:
+        try:
+            from app.search.router import SearchRouter
+            active_entities = SearchRouter.extract_drug_entities(query)
+        except Exception:
+            active_entities = []
+
+    # 1. Hitung skor relevansi & entitas untuk seluruh kandidat
+    scored_items = []
     for item in unique_results:
-        rel = calculate_relevance_score(query, item.title, item.snippet)
+        rel = calculate_relevance_score(
+            query=query,
+            title=item.title,
+            snippet=item.snippet,
+            full_text=item.full_text,
+            key_entities=active_entities
+        )
         ev_weight = EVIDENCE_WEIGHTS.get(item.evidence_level or "journal", 0.10)
         rec_bonus = calculate_recency_bonus(item.year)
 
-        item.score = round((rel * 0.5) + ev_weight + rec_bonus, 4)
+        # Invarian EBM: Derajat bukti ilmiah (meta-analysis/rct) HANYA berlaku
+        # jika artikel terbukti relevan secara faktual terhadap pertanyaan!
+        # Artikel yang tidak relevan (rel < 0.20) tidak berhak mendapat bobot bukti penuh.
+        effective_ev_weight = ev_weight if rel >= 0.20 else (ev_weight * rel * 2.0)
 
-    # Urutkan berdasarkan skor total tertinggi
+        item.score = round((rel * 0.55) + (effective_ev_weight * 0.30) + (rec_bonus * 0.15), 4)
+        scored_items.append((rel, item))
+
+    # 2. Filter entitas kunci:
+    # Jika query memuat entitas obat dan terdapat naskah yang cocok dengan entitas tersebut,
+    # singkirkan naskah yang sama sekali tidak memuat entitas obat (rel <= 0.05).
+    if active_entities:
+        has_entity_matches = any(
+            any(re.search(rf"\b{re.escape(e)}\b", f"{it.title} {it.snippet} {it.full_text or ''}".lower())
+                for e in active_entities)
+            for it in unique_results
+        )
+        if has_entity_matches:
+            filtered = [
+                it for (rel, it) in scored_items
+                if rel > 0.05 or any(
+                    re.search(rf"\b{re.escape(e)}\b", f"{it.title} {it.snippet} {it.full_text or ''}".lower())
+                    for e in active_entities
+                )
+            ]
+            if filtered:
+                unique_results = filtered
+            else:
+                unique_results = [it for (_, it) in scored_items]
+        else:
+            unique_results = [it for (_, it) in scored_items]
+    else:
+        unique_results = [it for (_, it) in scored_items]
+
+    # 3. Urutkan berdasarkan skor total tertinggi
     unique_results.sort(key=lambda x: x.score, reverse=True)
 
-    # Ambil top 6-10
+    # 4. Ambil top kandidat
     top_limit = min(max_count, max(min_count, len(unique_results)))
     final_selected = unique_results[:top_limit]
 

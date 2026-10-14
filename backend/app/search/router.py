@@ -1,6 +1,6 @@
 import logging
 import re
-from typing import List
+from typing import List, Set, Dict, Optional
 from app.academic_service import AcademicRetrieverService
 
 logger = logging.getLogger(__name__)
@@ -9,7 +9,10 @@ class SearchRouter:
     """
     Router cerdas untuk:
     1. Mengklasifikasikan apakah pertanyaan membutuhkan penelusuran (search) atau obrolan ringan.
-    2. Menulis ulang kueri (query rewriting) menjadi 2-4 kueri terfokus (Bahasa Inggris untuk basis data internasional).
+    2. Mengekstrak entitas obat (drug entity extraction) dengan fallback non-LLM (kamus & regex).
+    3. Menerjemahkan pertanyaan ke Bahasa Inggris Ilmiah dengan fallback non-LLM (kamus ID->EN).
+    4. Menulis ulang kueri (query rewriting) menjadi 2-4 kueri terfokus yang mempertahankan
+       entitas obat kunci untuk pencarian multi-provider berpresisi tinggi.
     """
 
     CONVERSATIONAL_WORDS = {
@@ -42,6 +45,140 @@ class SearchRouter:
         "ckd": "chronic kidney disease renal pharmacology",
         "copd": "chronic obstructive pulmonary disease bronchodilator",
         "osi": "OSI 7 layer model computer networking architecture",
+    }
+
+    # Kamus entitas obat baku (Bahasa Indonesia & Internasional)
+    KNOWN_DRUGS: Set[str] = {
+        "warfarin", "aspirin", "clopidogrel", "rivaroxaban", "apixaban", "dabigatran", "heparin", "enoxaparin",
+        "amlodipine", "nifedipine", "diltiazem", "verapamil", "lisinopril", "ramipril", "captopril", "enalapril",
+        "losartan", "valsartan", "candesartan", "telmisartan", "bisoprolol", "metoprolol", "atenolol", "propranolol",
+        "carvedilol", "furosemide", "spironolactone", "hydrochlorothiazide", "metformin", "insulin", "glimepiride",
+        "gliclazide", "empagliflozin", "dapagliflozin", "sitagliptin", "vildagliptin", "acarbose", "pioglitazone",
+        "atorvastatin", "simvastatin", "rosuvastatin", "pravastatin", "fenofibrate", "gemfibrozil", "ezetimibe",
+        "paracetamol", "acetaminophen", "ibuprofen", "ketorolac", "meloxicam", "celecoxib", "diclofenac",
+        "naproxen", "indomethacin", "tramadol", "morphine", "codeine", "fentanyl", "amoxicillin", "ampicillin",
+        "ciprofloxacin", "levofloxacin", "moxifloxacin", "azithromycin", "erythromycin", "clarithromycin",
+        "doxycycline", "gentamycin", "vancomycin", "ceftriaxone", "cefotaxime", "cefixime", "meropenem",
+        "omeprazole", "lansoprazole", "pantoprazole", "esomeprazole", "ranitidine", "famotidine", "sucralfate",
+        "dexamethasone", "methylprednisolone", "prednisone", "hydrocortisone", "triamcinolone", "budesonide",
+        "fluticasone", "diazepam", "alprazolam", "lorazepam", "clonazepam", "midazolam", "sertraline",
+        "fluoxetine", "escitalopram", "amitriptyline", "haloperidol", "risperidone", "quetiapine", "olanzapine",
+        "sildenafil", "tadalafil", "allopurinol", "febuxostat", "colchicine", "methotrexate", "cyclosporine",
+        "tacrolimus", "ibrutinib", "mefenamic acid"
+    }
+
+    # Pemetaan alias nama obat lokal/spesifik ke nama generik internasional
+    DRUG_ALIASES: Dict[str, str] = {
+        "asam mefenamat": "mefenamic acid",
+        "asam asetilsalisilat": "aspirin",
+        "parasetamol": "paracetamol",
+        "asetaminofen": "acetaminophen",
+        "amoksisilin": "amoxicillin",
+        "ampisilin": "ampicillin",
+        "siprofloksasin": "ciprofloxacin",
+        "levofloksasin": "levofloxacin",
+        "moksifloksasin": "moxifloxacin",
+        "azitromisin": "azithromycin",
+        "eritromisin": "erythromycin",
+        "doksisiklin": "doxycycline",
+        "gentamisin": "gentamycin",
+        "vankomisin": "vancomycin",
+        "seftriakson": "ceftriaxone",
+        "sefotaksim": "cefotaxime",
+        "sefiksim": "cefixime",
+        "omeprasol": "omeprazole",
+        "lansoprasol": "lansoprazole",
+        "pantoprasol": "pantoprazole",
+        "deksametason": "dexamethasone",
+        "metilprednisolon": "methylprednisolone",
+        "prednison": "prednisone",
+        "klindamisin": "clindamycin",
+        "simpastatin": "simvastatin",
+        "atorpastatin": "atorvastatin",
+    }
+
+    # Suffix pola farmakologis obat (Stemming / Pattern Matching)
+    DRUG_SUFFIX_PATTERN = re.compile(
+        r"\b[a-z]{3,}(?:statin|olol|pril|sartan|dipine|prazole|tidine|floxacin|cillin|mycin|cycline|xaban|parin|mab|nib|asone|olone|zepam|zolam|gliflozin|gliptin|triptan)\b",
+        re.IGNORECASE
+    )
+
+    # Kamus Fallback Terjemahan Non-LLM (Frasa Medis ID -> EN)
+    MEDICAL_PHRASES_MAP: Dict[str, str] = {
+        "efek samping": "adverse effects",
+        "efek sampingan": "adverse effects",
+        "reaksi merugikan": "adverse reactions",
+        "cara kerja": "mechanism of action",
+        "aturan pakai": "dosage administration",
+        "tata laksana": "clinical management",
+        "ibu hamil": "pregnancy",
+        "wanita hamil": "pregnancy",
+        "pasien hamil": "pregnancy",
+        "orang tua": "elderly",
+        "usia lanjut": "elderly geriatric",
+        "gangguan fungsi ginjal": "renal impairment",
+        "gangguan ginjal": "renal impairment",
+        "gagal ginjal": "renal failure",
+        "gagal jantung": "heart failure",
+        "tekanan darah tinggi": "hypertension",
+        "tekanan darah": "blood pressure",
+        "gula darah tinggi": "hyperglycemia",
+        "gula darah": "blood glucose",
+        "kencing manis": "diabetes mellitus",
+        "diabetes melitus tipe 2": "type 2 diabetes mellitus",
+        "diabetes melitus": "diabetes mellitus",
+        "diabetes tipe 2": "type 2 diabetes",
+        "radang sendi": "arthritis",
+        "batu ginjal": "kidney stones",
+        "risiko perdarahan": "bleeding risk",
+        "risiko pendarahan": "bleeding risk",
+        "bahaya perdarahan": "bleeding risk",
+    }
+
+    # Kamus Fallback Terjemahan Non-LLM (Kata Satuan Medis ID -> EN)
+    MEDICAL_WORDS_MAP: Dict[str, str] = {
+        "interaksi": "interaction",
+        "dengan": "with",
+        "dan": "and",
+        "risiko": "risk",
+        "bahaya": "risk",
+        "perdarahan": "bleeding",
+        "pendarahan": "bleeding",
+        "darah": "blood",
+        "ginjal": "renal",
+        "hati": "hepatic",
+        "jantung": "cardiac",
+        "paru": "pulmonary",
+        "otak": "cerebral",
+        "lansia": "elderly",
+        "anak": "pediatric",
+        "anak-anak": "pediatric",
+        "bayi": "infant",
+        "hamil": "pregnancy",
+        "kehamilan": "pregnancy",
+        "menyusui": "lactation",
+        "kontraindikasi": "contraindication",
+        "indikasi": "indication",
+        "dosis": "dosage",
+        "efektivitas": "efficacy",
+        "keamanan": "safety",
+        "mekanisme": "mechanism",
+        "toksisitas": "toxicity",
+        "penyakit": "disease",
+        "infeksi": "infection",
+        "peradangan": "inflammation",
+        "inflamasi": "inflammation",
+        "nyeri": "pain",
+        "pencegahan": "prevention",
+        "pengobatan": "treatment",
+        "terapi": "therapy",
+        "farmakologi": "pharmacology",
+        "versus": "versus",
+        "lawan": "versus",
+        "dibandingkan": "compared to",
+        "pada": "in",
+        "untuk": "for",
+        "antara": "between",
     }
 
     @classmethod
@@ -77,11 +214,87 @@ class SearchRouter:
         return True
 
     @classmethod
+    def extract_drug_entities(cls, text: str) -> List[str]:
+        """
+        Mengekstrak entitas nama obat secara deterministik (non-LLM fallback):
+        1. Cek pemetaan alias obat lokal (misal 'asam mefenamat' -> 'mefenamic acid').
+        2. Cek kamus obat baku KNOWN_DRUGS.
+        3. Cek pola akhiran farmakologis (suffix regex: -statin, -olol, -pril, dll).
+        Mengembalikan daftar nama obat unik dalam urutan kemunculannya.
+        """
+        if not text:
+            return []
+
+        t_lower = text.lower()
+        detected: List[str] = []
+        seen = set()
+
+        def add_drug(drug_name: str):
+            clean_name = drug_name.strip().lower()
+            if clean_name and clean_name not in seen:
+                seen.add(clean_name)
+                detected.append(clean_name)
+
+        # 1. Deteksi alias multi-kata / kata spesifik terlebih dahulu
+        for alias, standard_name in cls.DRUG_ALIASES.items():
+            if re.search(rf"\b{re.escape(alias)}\b", t_lower):
+                add_drug(standard_name)
+
+        # 2. Tokenisasi kata
+        tokens = re.findall(r"\b[a-zA-Z0-9-]+\b", t_lower)
+        for token in tokens:
+            if token in cls.KNOWN_DRUGS:
+                add_drug(token)
+            elif cls.DRUG_SUFFIX_PATTERN.match(token):
+                add_drug(token)
+
+        return detected
+
+    @classmethod
+    def translate_to_english_fallback(cls, text: str) -> str:
+        """
+        Menerjemahkan kueri ke bahasa Inggris ilmiah:
+        1. Coba penerjemah endpoint cepat via AcademicRetrieverService.
+        2. Jika offline / gagal / mengembalikan teks Indonesia, gunakan kamus frasa dan kata medis lokal.
+        """
+        if not text or not text.strip():
+            return ""
+
+        raw_translated = AcademicRetrieverService.translate_to_english(text)
+
+        # Deteksi apakah hasil terjemahan masih memuat kata-kata kunci bahasa Indonesia
+        indonesian_markers = [
+            "interaksi", "perdarahan", "pendarahan", "dengan", "dan", "risiko", "ginjal",
+            "lansia", "hamil", "menyusui", "dosis", "fungsi", "gangguan", "efek", "samping"
+        ]
+        has_id_markers = any(re.search(rf"\b{m}\b", raw_translated.lower()) for m in indonesian_markers)
+
+        # Jika masih ada istilah Indonesia atau penerjemah tidak mengubah teks asli
+        if has_id_markers or raw_translated.strip().lower() == text.strip().lower():
+            processed = text.lower()
+            # Ganti frasa medis dulu
+            for phr, trans in cls.MEDICAL_PHRASES_MAP.items():
+                processed = re.sub(rf"\b{re.escape(phr)}\b", trans, processed)
+            # Ganti kata satuan
+            tokens = re.findall(r"\b[a-zA-Z0-9-]+\b", processed)
+            replaced_tokens = []
+            for tok in tokens:
+                if tok in cls.MEDICAL_WORDS_MAP:
+                    replaced_tokens.append(cls.MEDICAL_WORDS_MAP[tok])
+                elif tok in cls.DRUG_ALIASES:
+                    replaced_tokens.append(cls.DRUG_ALIASES[tok])
+                else:
+                    replaced_tokens.append(tok)
+            return " ".join(replaced_tokens).strip()
+
+        return raw_translated.strip()
+
+    @classmethod
     def rewrite_queries(cls, question: str) -> List[str]:
         """
-        Menulis ulang kueri pengguna menjadi 2-4 kueri presisi berbahasa Inggris
-        untuk memaksimalkan recall dan precision di repositori PubMed, Semantic Scholar,
-        Europe PMC, dan openFDA.
+        Menulis ulang kueri pengguna menjadi 2-4 kueri presisi berbahasa Inggris ilmiah.
+        Wajib mengekstrak entitas obat dan menyertakannya di SEMUA variasi kueri untuk
+        menjamin relevansi dan mencegah hasil menyimpang.
         """
         if not question or not question.strip():
             return []
@@ -90,65 +303,83 @@ class SearchRouter:
         q_lower = q_clean.lower()
         generated_queries: List[str] = []
 
-        # 1. Cek pemetaan akronim spesifik
+        # 1. Cek akronim medis spesifik
         for acr, expansion in cls.ACRONYM_MAP.items():
             if re.search(rf"\b{acr}\b", q_lower):
                 generated_queries.append(expansion)
                 break
 
-        # 2. Terjemahkan ke Bahasa Inggris Ilmiah (Lightweight Translator)
-        translated_en = AcademicRetrieverService.translate_to_english(q_clean)
+        # 2. Ekstraksi entitas obat
+        detected_drugs = cls.extract_drug_entities(q_clean)
+
+        # 3. Terjemahkan ke Bahasa Inggris Ilmiah (dengan fallback kamus lokal)
+        translated_en = cls.translate_to_english_fallback(q_clean)
         clean_en = re.sub(r"[^\w\s-]", " ", translated_en).lower()
 
-        # Ekstraksi kata kunci penting (hilangkan stopwords pertanyaan)
+        # Stopwords pertanyaan umum bahasa Inggris
         stopwords = {
             "what", "is", "are", "the", "a", "an", "of", "for", "in", "to", "does", "do", "how",
             "can", "could", "should", "would", "tell", "me", "about", "explain", "please", "why",
-            "which", "when", "where", "safe", "effect", "effects", "drug", "medicine", "medication",
-            "and", "or", "on", "with", "during", "patient", "patients", "give", "show"
+            "which", "when", "where", "safe", "drug", "medicine", "medication", "patient", "patients",
+            "give", "show", "antara", "pada", "dan", "dengan"
         }
         tokens = [t for t in clean_en.split() if t not in stopwords and len(t) > 2]
-        core_keywords = " ".join(tokens[:5]) if tokens else clean_en[:40]
 
-        # Kueri 1: Kueri primer berbasis entitas utama
-        primary_query = core_keywords if core_keywords else clean_en
-        if primary_query and primary_query not in generated_queries:
-            generated_queries.append(primary_query)
+        if detected_drugs:
+            # Pastikan semua entitas obat berada di posisi terdepan
+            drug_str = " ".join(detected_drugs)
+            other_terms = [t for t in tokens if t not in detected_drugs]
+            context_str = " ".join(other_terms[:4])
 
-        # Kueri 2: Kueri mekanisme & farmakologi
-        mech_terms = []
-        if any(w in q_lower for w in ["efek", "samping", "bahaya", "toksik", "adverse", "side effect", "safety"]):
-            mech_terms.append("adverse effects safety")
-        if any(w in q_lower for w in ["mekanisme", "cara kerja", "mechanism", "action"]):
-            mech_terms.append("mechanism of action pharmacology")
-        if any(w in q_lower for w in ["dosis", "aturan pakai", "dosage", "dose", "administer"]):
-            mech_terms.append("dosage administration clinical")
-        if any(w in q_lower for w in ["hamil", "kandungan", "pregnancy", "pregnant", "lactation"]):
-            mech_terms.append("pregnancy safety")
-        if any(w in q_lower for w in ["anak", "pediatric", "children"]):
-            mech_terms.append("pediatric clinical outcomes")
-        if any(w in q_lower for w in ["lansia", "geriatric", "elderly"]):
-            mech_terms.append("geriatric elderly pharmacology")
+            # Kueri 1: Kueri primer (entitas obat + konteks klinis penting)
+            q1 = f"{drug_str} {context_str}".strip()
+            if q1 not in generated_queries:
+                generated_queries.append(q1)
 
-        if mech_terms:
-            variant_2 = f"{primary_query} {' '.join(mech_terms)}".strip()
-            if variant_2 not in generated_queries:
-                generated_queries.append(variant_2)
+            # Kueri 2: Kueri efek merugikan / interaksi / farmakologi
+            if any(w in q_lower for w in ["interaksi", "interaction"]):
+                q2 = f"{drug_str} drug interaction adverse effects"
+            elif any(w in q_lower for w in ["efek", "samping", "bahaya", "toksik", "adverse", "side effect", "safety"]):
+                q2 = f"{drug_str} adverse effects safety"
+            elif any(w in q_lower for w in ["dosis", "aturan pakai", "dosage", "dose", "administer"]):
+                q2 = f"{drug_str} dosage administration"
+            elif any(w in q_lower for w in ["ginjal", "renal", "kidney"]):
+                q2 = f"{drug_str} renal impairment pharmacokinetics"
+            elif any(w in q_lower for w in ["hamil", "pregnancy", "menyusui", "lactation"]):
+                q2 = f"{drug_str} pregnancy safety lactation"
+            else:
+                q2 = f"{drug_str} pharmacology clinical trial"
+
+            if q2 not in generated_queries:
+                generated_queries.append(q2)
+
+            # Kueri 3: Kueri sintesis bukti (systematic review / meta-analysis)
+            topic_hint = "bleeding" if any(w in q_lower for w in ["darah", "perdarahan", "pendarahan", "bleeding"]) else "clinical"
+            q3 = f"{drug_str} {topic_hint} systematic review meta-analysis"
+            if q3 not in generated_queries:
+                generated_queries.append(q3)
+
+            # Kueri 4: Kueri pedoman klinis / luaran keselamatan
+            q4 = f"{drug_str} clinical guidelines safety outcomes"
+            if len(generated_queries) < 4 and q4 not in generated_queries:
+                generated_queries.append(q4)
+
         else:
-            variant_2 = f"{primary_query} pharmacology clinical trial"
-            if variant_2 not in generated_queries:
-                generated_queries.append(variant_2)
+            # Tidak ada entitas obat eksplisit: kueri topik ilmiah umum
+            core_keywords = " ".join(tokens[:5]) if tokens else clean_en[:40]
+            if core_keywords and core_keywords not in generated_queries:
+                generated_queries.append(core_keywords)
 
-        # Kueri 3: Kueri meta-analisis / systematic review / evidence synthesis
-        variant_3 = f"{primary_query} systematic review meta-analysis"
-        if variant_3 not in generated_queries:
-            generated_queries.append(variant_3)
+            v2 = f"{core_keywords} pharmacology clinical trial"
+            if v2 not in generated_queries:
+                generated_queries.append(v2)
 
-        # Kueri 4: Kueri obat / terapi jika relevan
-        if len(generated_queries) < 4:
-            variant_4 = f"{primary_query} clinical guidelines therapy"
-            if variant_4 not in generated_queries:
-                generated_queries.append(variant_4)
+            v3 = f"{core_keywords} systematic review meta-analysis"
+            if v3 not in generated_queries:
+                generated_queries.append(v3)
 
-        # Batasi antara 2 hingga 4 kueri
+            v4 = f"{core_keywords} clinical guidelines therapy"
+            if len(generated_queries) < 4 and v4 not in generated_queries:
+                generated_queries.append(v4)
+
         return generated_queries[:4]

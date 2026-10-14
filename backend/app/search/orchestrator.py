@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from app.config import (
     SEARCH_PROVIDERS,
     NCBI_API_KEY,
+    S2_API_KEY,
     TAVILY_API_KEY,
 )
 from app.search.models import SearchResult, BaseSearchProvider
@@ -20,20 +21,23 @@ logger = logging.getLogger(__name__)
 
 class SearchOrchestrator:
     """
-    Orkestrator utama mesin penelusuran multi-provider (P3-1):
+    Orkestrator utama mesin penelusuran multi-provider (P3-1 & P3-1b):
     1. Evaluasi intent via SearchRouter (apakah pertanyaan memerlukan pencarian).
     2. Pengecekan cache SQLite (TTL 24 jam) berbasis kueri ternormalisasi.
-    3. Eksekusi paralel provider terpilih (PubMed, Semantic Scholar, Europe PMC, openFDA, Tavily) via asyncio.
-    4. Resiliensi kegagalan: timeout per provider, kegagalan satu provider tidak menggagalkan provider lain.
-    5. Fusi & perankingan EBM (relevansi, derajat bukti, kebaruan), deduplikasi DOI/URL.
-    6. Integrasi dengan RAG dokumen pengguna jika mode Library/Semua diaktifkan.
+    3. Ekstraksi entitas obat & Query Rewriting menjadi 2-4 kueri terfokus.
+    4. Eksekusi paralel provider terpilih dengan throttling & retry backoff 429.
+    5. Penggabungan esearch multi-kueri PubMed sebelum efetch tunggal.
+    6. Pembatasan target openFDA hanya untuk entitas obat yang terdeteksi.
+    7. Fusi & perankingan EBM: filter/demote naskah tanpa entitas kunci,
+       reranker relevansi judul+abstrak, dan bobot EBM bertingkat.
+    8. Integrasi dengan RAG dokumen pengguna jika mode Library/Semua diaktifkan.
     """
 
     def __init__(self, cache: Optional[SearchCache] = None):
         self.cache = cache or SearchCache()
         self.providers: Dict[str, BaseSearchProvider] = {
             "pubmed": PubMedProvider(api_key=NCBI_API_KEY),
-            "semantic_scholar": SemanticScholarProvider(),
+            "semantic_scholar": SemanticScholarProvider(api_key=S2_API_KEY),
             "europepmc": EuropePMCProvider(),
             "openfda_label": OpenFDALabelProvider(),
             "openfda": OpenFDALabelProvider(),  # alias
@@ -70,38 +74,54 @@ class SearchOrchestrator:
             logger.debug(f"[Orchestrator] Pertanyaan '{question}' tidak membutuhkan penelusuran.")
             return []
 
-        # 2. Cek Cache jika tidak dipaksa refresh
+        # 2. Ekstraksi entitas obat kunci
+        detected_drugs = SearchRouter.extract_drug_entities(question)
+
+        # 3. Cek Cache jika tidak dipaksa refresh
         if not force_refresh:
             cached_results = self.cache.get(question)
             if cached_results:
                 logger.debug(f"[Orchestrator] Cache HIT untuk kueri '{question}'.")
-                # Jika ada dokumen user tambahan, fusi dengan cache
                 if user_passages:
                     doc_results = self._convert_passages_to_results(user_passages)
-                    return rank_and_select(question, cached_results + doc_results, min_count=6, max_count=10)
+                    return rank_and_select(
+                        question,
+                        cached_results + doc_results,
+                        min_count=6,
+                        max_count=10,
+                        key_entities=detected_drugs
+                    )
                 return cached_results
 
-        # 3. Query Rewriting menjadi 2-4 kueri terfokus
+        # 4. Query Rewriting menjadi 2-4 kueri terfokus (berbahasa Inggris & memuat entitas obat)
         rewritten_queries = SearchRouter.rewrite_queries(question)
         if not rewritten_queries:
             rewritten_queries = [question]
 
-        # 4. Pilih provider aktif
+        # 5. Pilih provider aktif
         active_providers = self._get_active_providers(mode=mode)
         if not active_providers:
             logger.warning("[Orchestrator] Tidak ada provider pencarian yang aktif.")
             return []
 
-        # 5. Jalankan pencarian paralel secara aman (asyncio.gather dengan return_exceptions=True)
+        # 6. Jalankan pencarian paralel secara aman (asyncio.gather dengan return_exceptions=True)
         tasks = []
-        # Untuk mengoptimalkan latensi & kuota, kueri primer dikirim ke semua provider,
-        # kueri sekunder dikirim ke penyedia jurnal medis utama
         for p in active_providers:
-            # Kueri primer
-            tasks.append(self._safe_provider_search(p, rewritten_queries[0], limit=4))
-            # Kueri kedua (mekanisme / istilah alternatif) untuk jurnal
-            if len(rewritten_queries) > 1 and p.name in ("pubmed", "semantic_scholar", "europepmc"):
-                tasks.append(self._safe_provider_search(p, rewritten_queries[1], limit=3))
+            if p.name == "pubmed" and hasattr(p, "search_queries"):
+                # Gabungkan esearch kueri 1 & 2 sebelum satu kali efetch tunggal
+                tasks.append(self._safe_pubmed_multi_search(p, rewritten_queries[:2], limit_per_query=4, max_total=6))
+            elif p.name in ("openfda", "openfda_label"):
+                # openFDA HANYA mencari entitas obat yang terdeteksi
+                if detected_drugs:
+                    tasks.append(self._safe_openfda_search(p, rewritten_queries[0], detected_drugs=detected_drugs, limit=4))
+                else:
+                    logger.debug("[Orchestrator] Lewati openFDA karena tidak ada entitas obat terdeteksi.")
+            else:
+                # Kueri primer
+                tasks.append(self._safe_provider_search(p, rewritten_queries[0], limit=4))
+                # Kueri kedua untuk repositori naskah akademik (Semantic Scholar & Europe PMC)
+                if len(rewritten_queries) > 1 and p.name in ("semantic_scholar", "europepmc"):
+                    tasks.append(self._safe_provider_search(p, rewritten_queries[1], limit=3))
 
         gather_results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -112,15 +132,21 @@ class SearchOrchestrator:
             elif isinstance(res, Exception):
                 logger.warning(f"[Orchestrator] Error dari provider: {res}")
 
-        # 6. Integrasi dengan RAG dokumen MyLibrary pengguna jika ada
+        # 7. Integrasi dengan RAG dokumen MyLibrary pengguna jika ada
         if user_passages:
             doc_results = self._convert_passages_to_results(user_passages)
             collected_results.extend(doc_results)
 
-        # 7. Ranking, deduplikasi, dan seleksi top 6 - 10
-        final_ranked = rank_and_select(question, collected_results, min_count=6, max_count=10)
+        # 8. Ranking komprehensif, filter entitas kunci, dan seleksi top 6 - 10
+        final_ranked = rank_and_select(
+            question,
+            collected_results,
+            min_count=6,
+            max_count=10,
+            key_entities=detected_drugs
+        )
 
-        # 8. Simpan ke Cache jika ada hasil
+        # 9. Simpan ke Cache jika ada hasil
         if final_ranked:
             self.cache.set(question, final_ranked)
 
@@ -136,6 +162,34 @@ class SearchOrchestrator:
             return await provider.search(query, limit=limit)
         except Exception as e:
             logger.warning(f"[Orchestrator] Provider {provider.name} gagal pada query '{query}': {e}")
+            return []
+
+    async def _safe_pubmed_multi_search(
+        self,
+        provider: PubMedProvider,
+        queries: List[str],
+        limit_per_query: int = 4,
+        max_total: int = 6
+    ) -> List[SearchResult]:
+        try:
+            return await provider.search_queries(queries, limit_per_query=limit_per_query, max_total=max_total)
+        except Exception as e:
+            logger.warning(f"[Orchestrator] PubMed search_queries gagal: {e}")
+            return []
+
+    async def _safe_openfda_search(
+        self,
+        provider: BaseSearchProvider,
+        query: str,
+        detected_drugs: Optional[List[str]] = None,
+        limit: int = 4
+    ) -> List[SearchResult]:
+        try:
+            if hasattr(provider, "search") and "detected_drugs" in provider.search.__code__.co_varnames:
+                return await provider.search(query, limit=limit, detected_drugs=detected_drugs)
+            return await provider.search(query, limit=limit)
+        except Exception as e:
+            logger.warning(f"[Orchestrator] openFDA search gagal: {e}")
             return []
 
     def _convert_passages_to_results(self, passages: List[Dict[str, Any]]) -> List[SearchResult]:

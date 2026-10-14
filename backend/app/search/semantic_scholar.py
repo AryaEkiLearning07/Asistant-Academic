@@ -1,42 +1,38 @@
 import logging
 from typing import List, Optional
 import httpx
-from app.search.models import BaseSearchProvider, SearchResult
+from app.config import S2_API_KEY
+from app.search.models import BaseSearchProvider, SearchResult, classify_evidence_level
+from app.search.throttler import Throttler, execute_with_retry
 
 logger = logging.getLogger(__name__)
 
 class SemanticScholarProvider(BaseSearchProvider):
     """
     Penyedia pencarian literatur akademik Semantic Scholar via Graph API.
-    Mengambil naskah, abstrak lengkap, tahun, DOI, dan tautan openAccessPdf.
+    Mendukung S2_API_KEY opsional (rate limit ~10 req/s vs ~1 req/s tanpa kunci).
+    Dilengkapi throttling, retry backoff HTTP 429 (maks 3x), dan
+    klasifikasi EBM berbasis publicationTypes resmi.
     """
 
     def __init__(self, api_key: Optional[str] = None, timeout: float = 7.0):
-        self.api_key = api_key.strip() if api_key else None
+        # Gunakan API key dari argumen atau dari konfigurasi lingkungan S2_API_KEY
+        resolved_key = (api_key.strip() if api_key else "") or S2_API_KEY
+        self.api_key = resolved_key if resolved_key else None
         self.timeout = timeout
         self.endpoint = "https://api.semanticscholar.org/graph/v1/paper/search"
+
+        # Throttle: ~1 req/s tanpa key, 10 req/s dengan key
+        req_per_sec = 10.0 if self.api_key else 1.0
+        self.throttler = Throttler(requests_per_second=req_per_sec, max_concurrency=1)
 
     @property
     def name(self) -> str:
         return "semantic_scholar"
 
-    def _determine_evidence_level(self, pub_types: List[str], text: str) -> str:
-        lower_types = [t.lower() for t in (pub_types or [])]
-        combined = (" ".join(lower_types) + " " + text).lower()
-
-        if any(k in combined for k in ["meta-analysis", "meta analysis"]):
-            return "meta_analysis"
-        if any(k in combined for k in ["systematic review", "systematic literature review"]):
-            return "systematic_review"
-        if any(k in combined for k in ["clinicaltrial", "clinical trial", "randomized controlled trial", "rct"]):
-            return "rct"
-        if any(k in combined for k in ["cohort", "observational", "case-control"]):
-            return "observational"
-        if any(k in combined for k in ["guideline", "consensus"]):
-            return "guideline"
-        if any(k in combined for k in ["review"]):
-            return "review"
-        return "journal"
+    def _determine_evidence_level(self, pub_types: List[str], text: str, title: str = "") -> str:
+        """Kompatibilitas mundur internal, mengacu ke classifier EBM terpadu."""
+        return classify_evidence_level(pub_types=pub_types, title=title, text=text)
 
     async def search(self, query: str, limit: int = 5) -> List[SearchResult]:
         if not query or not query.strip():
@@ -48,13 +44,20 @@ class SemanticScholarProvider(BaseSearchProvider):
             "limit": str(limit),
             "fields": "title,url,abstract,year,authors,externalIds,openAccessPdf,publicationTypes,venue",
         }
-        headers = {"User-Agent": "EPIONA-ResearchAssistant/2.0"}
+        headers = {"User-Agent": "EPIONA-ResearchAssistant/2.0 (mailto:admin@epiona.my.id)"}
         if self.api_key:
             headers["x-api-key"] = self.api_key
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(self.endpoint, params=params, headers=headers)
+                resp = await execute_with_retry(
+                    lambda: client.get(self.endpoint, params=params, headers=headers),
+                    throttler=self.throttler,
+                    max_retries=3,
+                    base_backoff=1.0,
+                    provider_name="SemanticScholar"
+                )
+
                 if resp.status_code != 200:
                     logger.warning(f"[SemanticScholar] API error HTTP {resp.status_code}")
                     return []
@@ -75,12 +78,16 @@ class SemanticScholarProvider(BaseSearchProvider):
                     authors_list = [a.get("name") for a in paper.get("authors", []) if a.get("name")]
                     ext_ids = paper.get("externalIds") or {}
                     doi = ext_ids.get("DOI")
-                    
+
                     pdf_info = paper.get("openAccessPdf") or {}
                     pdf_url = pdf_info.get("url") if isinstance(pdf_info, dict) else None
 
                     pub_types = paper.get("publicationTypes") or []
-                    evidence_level = self._determine_evidence_level(pub_types, f"{title} {abstract}")
+                    evidence_level = classify_evidence_level(
+                        pub_types=pub_types,
+                        title=title,
+                        text=abstract
+                    )
 
                     paper_url = paper.get("url")
                     final_url = f"https://doi.org/{doi}" if doi else (paper_url or f"https://www.semanticscholar.org/paper/{paper.get('paperId')}")

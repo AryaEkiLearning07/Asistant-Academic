@@ -514,3 +514,263 @@ async def test_search_orchestrator_one_provider_failure_does_not_break_all(tmp_p
         # Provider yang gagal tidak menggagalkan provider lain
         assert len(results) >= 1
         assert "Efficacy of ARB" in results[0].title
+
+
+# ==============================================================================
+# 11. P3-1B TESTS: RATE LIMIT & RETRY BACKOFF (PUBMED & SEMANTIC SCHOLAR)
+# ==============================================================================
+@pytest.mark.asyncio
+async def test_pubmed_retry_on_429():
+    from app.search.models import classify_evidence_level
+    provider = PubMedProvider(api_key="mock_key", timeout=5.0)
+    resp_429_1 = MagicMock(status_code=429, headers={"Retry-After": "0.01"})
+    resp_429_2 = MagicMock(status_code=429, headers={})
+    resp_200_search = MagicMock(status_code=200, json=lambda: {"esearchresult": {"idlist": ["12345"]}})
+
+    mock_xml = """<?xml version="1.0"?><PubmedArticleSet><PubmedArticle>
+    <MedlineCitation><PMID>12345</PMID><Article><ArticleTitle>Warfarin Aspirin Study</ArticleTitle>
+    <Journal><Title>J Throm</Title></Journal><Abstract><AbstractText>Interaction trial.</AbstractText></Abstract>
+    </Article></MedlineCitation></PubmedArticle></PubmedArticleSet>"""
+    resp_200_fetch = MagicMock(status_code=200, text=mock_xml)
+
+    with patch("httpx.AsyncClient.get") as mock_get, patch("asyncio.sleep", return_value=None):
+        mock_get.side_effect = [resp_429_1, resp_429_2, resp_200_search, resp_200_fetch]
+        results = await provider.search("warfarin aspirin")
+        assert len(results) == 1
+        assert "Warfarin Aspirin" in results[0].title
+        assert mock_get.call_count == 4
+
+
+@pytest.mark.asyncio
+async def test_pubmed_combined_esearch_single_efetch():
+    provider = PubMedProvider(api_key="mock_key", timeout=5.0)
+
+    search_resp_1 = MagicMock(status_code=200, json=lambda: {"esearchresult": {"idlist": ["1001", "1002"]}})
+    search_resp_2 = MagicMock(status_code=200, json=lambda: {"esearchresult": {"idlist": ["1002", "1003"]}})
+
+    combined_xml = """<?xml version="1.0"?><PubmedArticleSet>
+    <PubmedArticle><MedlineCitation><PMID>1001</PMID><Article><ArticleTitle>Paper 1001</ArticleTitle>
+    <Journal><Title>J1</Title></Journal><Abstract><AbstractText>Text 1</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+    <PubmedArticle><MedlineCitation><PMID>1002</PMID><Article><ArticleTitle>Paper 1002</ArticleTitle>
+    <Journal><Title>J2</Title></Journal><Abstract><AbstractText>Text 2</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+    <PubmedArticle><MedlineCitation><PMID>1003</PMID><Article><ArticleTitle>Paper 1003</ArticleTitle>
+    <Journal><Title>J3</Title></Journal><Abstract><AbstractText>Text 3</AbstractText></Abstract></Article></MedlineCitation></PubmedArticle>
+    </PubmedArticleSet>"""
+    fetch_resp = MagicMock(status_code=200, text=combined_xml)
+
+    with patch("httpx.AsyncClient.get") as mock_get:
+        mock_get.side_effect = [search_resp_1, search_resp_2, fetch_resp]
+        results = await provider.search_queries(["query 1", "query 2"], limit_per_query=4, max_total=6)
+
+        assert mock_get.call_count == 3
+        fetch_call = mock_get.call_args_list[2]
+        called_params = fetch_call.kwargs.get("params") or fetch_call[1].get("params")
+        assert "1001,1002,1003" == called_params.get("id")
+        assert len(results) == 3
+
+
+@pytest.mark.asyncio
+async def test_semantic_scholar_retry_on_429_and_api_key():
+    provider = SemanticScholarProvider(api_key="custom_s2_key")
+    assert provider.api_key == "custom_s2_key"
+    assert provider.throttler.req_per_second == 10.0
+
+    resp_429 = MagicMock(status_code=429, headers={"Retry-After": "0.01"})
+    mock_data = {
+        "data": [
+            {
+                "paperId": "p1",
+                "title": "Bleeding Risk with Warfarin and Aspirin",
+                "abstract": "Dual therapy increases bleeding.",
+                "year": 2024,
+                "publicationTypes": ["Review"],
+                "venue": "Blood Journal"
+            }
+        ]
+    }
+    resp_200 = MagicMock(status_code=200, json=lambda: mock_data)
+
+    with patch("httpx.AsyncClient.get") as mock_get, patch("asyncio.sleep", return_value=None):
+        mock_get.side_effect = [resp_429, resp_200]
+        results = await provider.search("warfarin aspirin")
+
+        assert len(results) == 1
+        assert "Bleeding Risk with Warfarin and Aspirin" in results[0].title
+        assert results[0].evidence_level == "review"
+
+        first_call = mock_get.call_args_list[0]
+        headers = first_call.kwargs.get("headers") or first_call[1].get("headers")
+        assert headers.get("x-api-key") == "custom_s2_key"
+
+
+# ==============================================================================
+# 12. P3-1B TESTS: RELEVANCE, QUERY REWRITE & DRUG EXTRACTION
+# ==============================================================================
+def test_query_rewrite_drug_extraction_warfarin_aspirin():
+    q = "interaksi warfarin dengan aspirin risiko perdarahan"
+    drugs = SearchRouter.extract_drug_entities(q)
+    assert "warfarin" in drugs
+    assert "aspirin" in drugs
+
+    rewritten = SearchRouter.rewrite_queries(q)
+    assert len(rewritten) >= 2
+    for r in rewritten:
+        r_lower = r.lower()
+        assert "warfarin" in r_lower
+        assert "aspirin" in r_lower
+
+
+def test_translate_fallback_non_llm_dictionary():
+    q = "interaksi warfarin dengan aspirin risiko perdarahan"
+    translated = SearchRouter.translate_to_english_fallback(q)
+    t_lower = translated.lower()
+    assert "warfarin" in t_lower
+    assert "aspirin" in t_lower
+    assert "interaction" in t_lower
+    assert "bleeding" in t_lower
+    assert "risk" in t_lower
+
+
+@pytest.mark.asyncio
+async def test_openfda_skips_when_no_drug_detected():
+    provider = OpenFDALabelProvider()
+    with patch("httpx.AsyncClient.get") as mock_get:
+        results = await provider.search("bagaimana cara konfigurasi router osi layer")
+        assert results == []
+        mock_get.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_openfda_targets_detected_drugs():
+    provider = OpenFDALabelProvider()
+    mock_fda_response = {
+        "results": [
+            {
+                "openfda": {"brand_name": ["COUMADIN"], "generic_name": ["WARFARIN SODIUM"]},
+                "drug_interactions": ["Concomitant use of aspirin with warfarin increases the risk of bleeding."],
+                "warnings": ["Bleeding is the most common adverse reaction."],
+                "effective_time": "20240101"
+            }
+        ]
+    }
+    with patch("httpx.AsyncClient.get") as mock_get:
+        mock_get.return_value = MagicMock(status_code=200, json=lambda: mock_fda_response)
+        results = await provider.search(
+            "interaksi warfarin dengan aspirin risiko perdarahan",
+            detected_drugs=["warfarin", "aspirin"]
+        )
+        assert len(results) >= 1
+        res = results[0]
+        assert "COUMADIN" in res.title
+        assert "Interaksi:" in res.snippet
+        assert "aspirin with warfarin increases the risk of bleeding" in res.snippet
+
+
+def test_ranking_filters_unrelated_entities_moxifloxacin_fontan_ibrutinib():
+    query = "interaksi warfarin dengan aspirin risiko perdarahan"
+    key_drugs = ["warfarin", "aspirin"]
+
+    item_moxifloxacin = SearchResult(
+        title="Moxifloxacin in Community-Acquired Pneumonia: A Meta-Analysis",
+        url="https://doi.org/10.1001/moxi",
+        snippet="Efficacy and safety of moxifloxacin in respiratory tract infections.",
+        evidence_level="meta_analysis",
+        year=2025
+    )
+    item_fontan = SearchResult(
+        title="Fontan Procedure Outcomes in Pediatric Congenital Heart Disease: An RCT",
+        url="https://doi.org/10.1001/fontan",
+        snippet="Surgical hemodynamics in Fontan palliation patients.",
+        evidence_level="rct",
+        year=2024
+    )
+    item_ibrutinib = SearchResult(
+        title="Ibrutinib in Relapsed Chronic Lymphocytic Leukemia",
+        url="https://doi.org/10.1001/ibrutinib",
+        snippet="Monotherapy with BTK inhibitor ibrutinib in CLL patients.",
+        evidence_level="systematic_review",
+        year=2024
+    )
+
+    item_relevant_1 = SearchResult(
+        title="Risk of Bleeding with Warfarin and Aspirin Co-administration: A Systematic Review",
+        url="https://doi.org/10.1001/warfarin-aspirin",
+        snippet="The combination of warfarin and aspirin significantly increases major hemorrhage risk.",
+        evidence_level="systematic_review",
+        year=2024
+    )
+    item_relevant_2 = SearchResult(
+        title="Bleeding Outcomes with Dual Warfarin and Aspirin Therapy: A Cohort Study",
+        url="https://doi.org/10.1001/warfarin-aspirin-cohort",
+        snippet="Investigating gastrointestinal bleeding risk when aspirin is added to warfarin anticoagulation.",
+        evidence_level="observational",
+        year=2023
+    )
+
+    ranked = rank_and_select(
+        query=query,
+        results=[item_moxifloxacin, item_fontan, item_ibrutinib, item_relevant_1, item_relevant_2],
+        min_count=2,
+        max_count=5,
+        key_entities=key_drugs
+    )
+
+    assert len(ranked) >= 2
+    top_titles = [r.title for r in ranked[:2]]
+    assert any("Warfarin and Aspirin Co-administration" in t for t in top_titles)
+
+    assert "Moxifloxacin" not in ranked[0].title
+    assert "Fontan" not in ranked[0].title
+    assert "Ibrutinib" not in ranked[0].title
+
+
+# ==============================================================================
+# 13. P3-1B TESTS: EVIDENCE LEVEL CLASSIFICATION (REVIEW VS RCT)
+# ==============================================================================
+def test_evidence_classification_review_not_labeled_rct():
+    from app.search.models import classify_evidence_level
+    pub_types = ["Review", "Journal Article"]
+    title = "Contemporary Management of Atrial Fibrillation: A Clinical Review"
+    abstract_with_rct_mention = (
+        "In this comprehensive review, we evaluate multiple randomized controlled trials (RCTs) "
+        "and clinical trials investigating stroke prevention with anticoagulation."
+    )
+
+    level = classify_evidence_level(
+        pub_types=pub_types,
+        title=title,
+        text=abstract_with_rct_mention
+    )
+    assert level == "review"
+
+
+def test_evidence_classification_systematic_review_priority():
+    from app.search.models import classify_evidence_level
+    pub_types = ["Systematic Review"]
+    title = "Bleeding Complications in Combined Antiplatelet and Anticoagulation"
+    abstract = "Systematic review of 12 clinical trials and randomized controlled studies."
+
+    level = classify_evidence_level(
+        pub_types=pub_types,
+        title=title,
+        text=abstract
+    )
+    assert level == "systematic_review"
+
+
+def test_evidence_classification_title_and_abstract_fallback():
+    from app.search.models import classify_evidence_level
+    level_meta = classify_evidence_level(
+        pub_types=["Journal Article"],
+        title="Efficacy of SGLT2 Inhibitors: A Meta-Analysis of Randomized Trials",
+        text="Background and methods."
+    )
+    assert level_meta == "meta_analysis"
+
+    level_rct = classify_evidence_level(
+        pub_types=[],
+        title="Amlodipine vs Placebo in Isolated Systolic Hypertension: A Randomized Controlled Trial",
+        text="A double-blind trial."
+    )
+    assert level_rct == "rct"
+

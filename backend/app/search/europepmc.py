@@ -2,7 +2,7 @@ import logging
 import re
 from typing import List, Optional
 import httpx
-from app.search.models import BaseSearchProvider, SearchResult
+from app.search.models import BaseSearchProvider, SearchResult, classify_evidence_level
 
 logger = logging.getLogger(__name__)
 
@@ -20,23 +20,9 @@ class EuropePMCProvider(BaseSearchProvider):
     def name(self) -> str:
         return "europepmc"
 
-    def _determine_evidence_level(self, pub_types: List[str], text: str) -> str:
-        lower_types = [t.lower() for t in (pub_types or [])]
-        combined = (" ".join(lower_types) + " " + text).lower()
-
-        if any(k in combined for k in ["meta-analysis", "meta analysis"]):
-            return "meta_analysis"
-        if any(k in combined for k in ["systematic review", "systematic literature review"]):
-            return "systematic_review"
-        if any(k in combined for k in ["randomized controlled trial", "clinical trial", "rct"]):
-            return "rct"
-        if any(k in combined for k in ["cohort", "observational", "case-control"]):
-            return "observational"
-        if any(k in combined for k in ["guideline", "consensus"]):
-            return "guideline"
-        if any(k in combined for k in ["review"]):
-            return "review"
-        return "journal"
+    def _determine_evidence_level(self, pub_types: List[str], text: str, title: str = "") -> str:
+        """Kompatibilitas mundur internal, mengacu ke classifier EBM terpadu."""
+        return classify_evidence_level(pub_types=pub_types, title=title, text=text)
 
     async def search(self, query: str, limit: int = 5) -> List[SearchResult]:
         if not query or not query.strip():
@@ -49,7 +35,7 @@ class EuropePMCProvider(BaseSearchProvider):
             "pageSize": str(limit),
             "resultType": "core",
         }
-        headers = {"User-Agent": "EPIONA-ResearchAssistant/2.0"}
+        headers = {"User-Agent": "EPIONA-ResearchAssistant/2.0 (mailto:admin@epiona.my.id)"}
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -96,7 +82,11 @@ class EuropePMCProvider(BaseSearchProvider):
                     if isinstance(pub_type_list, str):
                         pub_type_list = [pub_type_list]
 
-                    evidence_level = self._determine_evidence_level(pub_type_list, f"{title} {abstract_clean}")
+                    evidence_level = classify_evidence_level(
+                        pub_types=pub_type_list,
+                        title=title,
+                        text=abstract_clean
+                    )
 
                     final_url = f"https://doi.org/{doi}" if doi else (
                         f"https://europepmc.org/article/MED/{pmid}" if pmid else (

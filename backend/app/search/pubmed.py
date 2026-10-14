@@ -3,14 +3,17 @@ import re
 import xml.etree.ElementTree as ET
 from typing import List, Optional
 import httpx
-from app.search.models import BaseSearchProvider, SearchResult
+from app.search.models import BaseSearchProvider, SearchResult, classify_evidence_level
+from app.search.throttler import Throttler, execute_with_retry
 
 logger = logging.getLogger(__name__)
 
 class PubMedProvider(BaseSearchProvider):
     """
     Penyedia pencarian literatur biomedis NCBI PubMed via E-utilities (esearch + efetch).
-    Mendukung NCBI_API_KEY opsional untuk rate limit lebih tinggi.
+    Mendukung NCBI_API_KEY opsional untuk rate limit lebih tinggi (10 req/s vs 3 req/s).
+    Dilengkapi throttling, retry backoff HTTP 429 (maks 3x), dan penggabungan
+    esearch multi-kueri sebelum satu panggilan efetch tunggal.
     """
 
     def __init__(self, api_key: Optional[str] = None, timeout: float = 7.0):
@@ -19,71 +22,101 @@ class PubMedProvider(BaseSearchProvider):
         self.esearch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
         self.efetch_url = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
 
+        # Throttle: <= 3 req/s tanpa key, 10 req/s dengan key
+        req_per_sec = 10.0 if self.api_key else 3.0
+        self.throttler = Throttler(requests_per_second=req_per_sec, max_concurrency=1)
+
     @property
     def name(self) -> str:
         return "pubmed"
 
-    def _determine_evidence_level(self, pub_types: List[str], text_to_check: str) -> str:
-        lower_types = [pt.lower() for pt in pub_types]
-        combined_text = ((" ".join(lower_types)) + " " + text_to_check).lower()
-
-        if any(k in combined_text for k in ["meta-analysis", "meta analysis"]):
-            return "meta_analysis"
-        if any(k in combined_text for k in ["systematic review", "systematic literature review"]):
-            return "systematic_review"
-        if any(k in combined_text for k in [
-            "randomized controlled trial", "randomised controlled trial", "clinical trial", "rct"
-        ]):
-            return "rct"
-        if any(k in combined_text for k in [
-            "cohort study", "case-control", "observational study", "prospective cohort", "retrospective cohort"
-        ]):
-            return "observational"
-        if any(k in combined_text for k in ["practice guideline", "guideline", "consensus"]):
-            return "guideline"
-        if any(k in combined_text for k in ["review", "scoping review"]):
-            return "review"
-        return "journal"
+    def _determine_evidence_level(self, pub_types: List[str], text_to_check: str, title: str = "") -> str:
+        """Kompatibilitas mundur internal, mengacu ke classifier EBM terpadu."""
+        return classify_evidence_level(pub_types=pub_types, title=title, text=text_to_check)
 
     async def search(self, query: str, limit: int = 5) -> List[SearchResult]:
-        if not query or not query.strip():
+        """Pencarian kueri tunggal standar."""
+        return await self.search_queries([query], limit_per_query=limit, max_total=limit)
+
+    async def search_queries(
+        self,
+        queries: List[str],
+        limit_per_query: int = 4,
+        max_total: int = 8
+    ) -> List[SearchResult]:
+        """
+        Menggabungkan esearch dari beberapa kueri sebelum melakukan efetch tunggal.
+        Ini memangkas separuh panggilan efetch dan mencegah lonjakan HTTP 429 pada NCBI.
+        """
+        valid_queries = [q.strip() for q in queries if q and q.strip()]
+        if not valid_queries:
             return []
 
-        clean_query = query.strip()
-        params = {
-            "db": "pubmed",
-            "term": clean_query,
-            "retmax": str(limit),
-            "retmode": "json",
-            "sort": "relevance",
-        }
-        if self.api_key:
-            params["api_key"] = self.api_key
-
         headers = {"User-Agent": "EPIONA-ResearchAssistant/2.0 (mailto:admin@epiona.my.id)"}
+        combined_pmids: List[str] = []
+        seen_pmids = set()
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
-                resp = await client.get(self.esearch_url, params=params, headers=headers)
-                if resp.status_code != 200:
-                    logger.warning(f"[PubMed] ESearch error HTTP {resp.status_code}")
+                # 1. Jalankan esearch untuk masing-masing kueri dengan throttling & retry 429
+                for q in valid_queries:
+                    params = {
+                        "db": "pubmed",
+                        "term": q,
+                        "retmax": str(limit_per_query),
+                        "retmode": "json",
+                        "sort": "relevance",
+                    }
+                    if self.api_key:
+                        params["api_key"] = self.api_key
+
+                    try:
+                        resp = await execute_with_retry(
+                            lambda: client.get(self.esearch_url, params=params, headers=headers),
+                            throttler=self.throttler,
+                            max_retries=3,
+                            base_backoff=1.0,
+                            provider_name="PubMed-ESearch"
+                        )
+                        if resp.status_code == 200:
+                            search_data = resp.json()
+                            id_list = search_data.get("esearchresult", {}).get("idlist", [])
+                            for pid in id_list:
+                                if pid not in seen_pmids:
+                                    seen_pmids.add(pid)
+                                    combined_pmids.append(pid)
+                        else:
+                            logger.warning(f"[PubMed] ESearch error HTTP {resp.status_code} untuk kueri '{q}'")
+                    except Exception as esearch_err:
+                        logger.warning(f"[PubMed] Gagal esearch kueri '{q}': {esearch_err}")
+
+                    # Hentikan pencarian jika target PMIDs sudah cukup banyak
+                    if len(combined_pmids) >= max_total * 2:
+                        break
+
+                if not combined_pmids:
                     return []
 
-                search_data = resp.json()
-                id_list = search_data.get("esearchresult", {}).get("idlist", [])
-                if not id_list:
-                    return []
+                # Ambil subset teratas hingga batas max_total
+                target_ids = combined_pmids[:max_total]
 
-                # Fetch full metadata & XML abstract
+                # 2. Satu kali efetch tunggal untuk seluruh PMIDs hasil gabungan
                 fetch_params = {
                     "db": "pubmed",
-                    "id": ",".join(id_list),
+                    "id": ",".join(target_ids),
                     "retmode": "xml",
                 }
                 if self.api_key:
                     fetch_params["api_key"] = self.api_key
 
-                fetch_resp = await client.get(self.efetch_url, params=fetch_params, headers=headers)
+                fetch_resp = await execute_with_retry(
+                    lambda: client.get(self.efetch_url, params=fetch_params, headers=headers),
+                    throttler=self.throttler,
+                    max_retries=3,
+                    base_backoff=1.0,
+                    provider_name="PubMed-EFetch"
+                )
+
                 if fetch_resp.status_code != 200:
                     logger.warning(f"[PubMed] EFetch error HTTP {fetch_resp.status_code}")
                     return []
@@ -167,13 +200,18 @@ class PubMedProvider(BaseSearchProvider):
                     elif id_type == "pmc" and aid.text:
                         pmcid = aid.text.strip()
 
-                # 8. Publication types
+                # 8. Publication types (MeSH PublicationType)
                 pub_types: List[str] = []
                 for pt in article_tag.findall(".//PublicationTypeList/PublicationType"):
                     if pt.text:
                         pub_types.append(pt.text.strip())
 
-                evidence_level = self._determine_evidence_level(pub_types, f"{title} {abstract}")
+                # Klasifikasi bukti mengutamakan PublicationType resmi MeSH
+                evidence_level = classify_evidence_level(
+                    pub_types=pub_types,
+                    title=title,
+                    text=abstract
+                )
 
                 # 9. URL & PDF URL
                 url = f"https://doi.org/{doi}" if doi else (

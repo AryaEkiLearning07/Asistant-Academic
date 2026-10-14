@@ -99,6 +99,7 @@ RERANKER_MODEL = os.getenv("RERANKER_MODEL", "").strip()
 SEARCH_PROVIDERS = os.getenv("SEARCH_PROVIDERS", "pubmed,semantic_scholar,europepmc,openfda_label,tavily").strip()
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "").strip()
 NCBI_API_KEY = os.getenv("NCBI_API_KEY", "").strip()
+S2_API_KEY = os.getenv("S2_API_KEY", os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")).strip()
 CLAIM_CHECK = os.getenv("CLAIM_CHECK", "1").strip().lower() not in ("0", "false", "no")
 SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "86400"))
 SEARCH_CACHE_DB = DATA_DIR / "epiona_search_cache.db"
