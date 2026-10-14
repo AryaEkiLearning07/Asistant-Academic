@@ -10,6 +10,7 @@ import {
   Check,
   ZoomIn,
   ExternalLink,
+  Compass,
 } from "lucide-react";
 import { Message, DocumentItem, CitationItem, FigureSnippet } from "../../types";
 import { FileFormatIcon } from "../library/FileFormatIcon";
@@ -281,10 +282,116 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
                 <span>Maaf, respon tidak dapat dimuat atau terjadi gangguan koneksi ke model AI. Silakan coba kirim ulang pertanyaan Anda.</span>
               </div>
             ) : (
-              <ReactMarkdown
-              remarkPlugins={[remarkGfm, remarkMath]}
-              rehypePlugins={[rehypeKatex]}
-              components={{
+              <>
+                {/* KARTU SUMBER DI ATAS JAWABAN (PERPLEXITY-STYLE P3-1) */}
+                {m.citations && m.citations.length > 0 && (
+                  <div className="mb-3.5 pb-2.5 border-b border-gray-200/60 dark:border-[#2A333B]">
+                    <div className="flex items-center gap-1.5 mb-2 text-xs font-semibold text-gray-500 dark:text-gray-400 select-none">
+                      <Compass className="w-3.5 h-3.5 text-teal-500 shrink-0" />
+                      <span>Sumber Terverifikasi ({m.citations.length})</span>
+                    </div>
+                    <div className="flex gap-2.5 overflow-x-auto pb-1.5 scrollbar-thin">
+                      {m.citations.map((c, cIdx) => {
+                        const citeNum = cIdx + 1;
+                        const cleanTitle = (c.document_title || "Sumber Rujukan")
+                          .replace(/\.pdf$/i, "")
+                          .replace(/[-_]/g, " ");
+                        const sourceSite =
+                          c.journal_name ||
+                          (c.source_type === "label"
+                            ? "FDA Drug Label"
+                            : c.source_type === "web"
+                            ? "Web"
+                            : "MyLibrary");
+                        const yearStr = c.publication_year ? `(${c.publication_year})` : "";
+
+                        let evLabel = "Jurnal";
+                        if (c.evidence_level) {
+                          const ev = c.evidence_level.toLowerCase();
+                          if (ev.includes("meta_analysis")) evLabel = "Meta-Analisis";
+                          else if (ev.includes("systematic_review")) evLabel = "Systematic Review";
+                          else if (ev.includes("rct") || ev.includes("clinical")) evLabel = "RCT";
+                          else if (ev.includes("drug_label") || c.source_type === "label") evLabel = "Label FDA";
+                          else if (ev.includes("observational")) evLabel = "Observasional";
+                          else if (ev.includes("guideline")) evLabel = "Guideline";
+                          else if (ev.includes("review")) evLabel = "Review";
+                          else if (ev.includes("web") || c.source_type === "web") evLabel = "Web";
+                          else if (ev.includes("document") || c.source_type === "document") evLabel = "Dokumen";
+                        } else if (c.source_type === "label") {
+                          evLabel = "Label FDA";
+                        } else if (c.source_type === "web") {
+                          evLabel = "Web";
+                        } else if (c.source_type === "document") {
+                          evLabel = "Dokumen";
+                        }
+
+                        const handleCardClick = (e: React.MouseEvent) => {
+                          e.preventDefault();
+                          if (c.url) {
+                            window.open(c.url, "_blank", "noopener,noreferrer");
+                          } else {
+                            handleCitationClick(c);
+                          }
+                        };
+
+                        return (
+                          <div
+                            key={cIdx}
+                            onClick={handleCardClick}
+                            className={`group/card flex flex-col justify-between w-52 min-w-[208px] p-2.5 rounded-xl border text-left cursor-pointer transition-all duration-150 hover:-translate-y-0.5 shadow-2xs ${
+                              theme === "dark"
+                                ? "bg-[#161B21] border-[#2A333B] hover:border-[#34D3BE] hover:bg-[#1B2127]"
+                                : "bg-white border-gray-200 hover:border-teal-500 hover:bg-teal-50/30"
+                            }`}
+                            title={`Klik untuk membuka sumber rujukan:\n${cleanTitle}\n${c.url || ""}`}
+                          >
+                            <div>
+                              <div className="flex items-center justify-between gap-1 mb-1">
+                                <span
+                                  className={`inline-flex items-center justify-center w-4 h-4 rounded-full text-[10px] font-bold ${
+                                    theme === "dark" ? "bg-[#34D3BE] text-[#12161A]" : "bg-[#0F766E] text-white"
+                                  }`}
+                                >
+                                  {citeNum}
+                                </span>
+                                <span
+                                  className={`text-[9.5px] px-1.5 py-0.5 rounded font-bold truncate ${
+                                    theme === "dark"
+                                      ? "bg-[#34D3BE]/15 text-[#34D3BE]"
+                                      : "bg-teal-100 text-[#0F766E]"
+                                  }`}
+                                >
+                                  {evLabel}
+                                </span>
+                              </div>
+                              <p
+                                className={`text-xs font-semibold line-clamp-2 leading-tight mb-1 ${
+                                  theme === "dark"
+                                    ? "text-gray-200 group-hover/card:text-white"
+                                    : "text-gray-800 group-hover/card:text-teal-900"
+                                }`}
+                              >
+                                {cleanTitle}
+                              </p>
+                            </div>
+                            <div className="flex items-center justify-between text-[10px] opacity-75 mt-1 pt-1 border-t border-gray-200/40 dark:border-gray-800/40">
+                              <span className="truncate max-w-[130px] font-medium" title={sourceSite}>
+                                {sourceSite} {yearStr}
+                              </span>
+                              {c.url ? (
+                                <ExternalLink className="w-3 h-3 shrink-0 opacity-60 group-hover/card:opacity-100 transition" />
+                              ) : null}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
+                <ReactMarkdown
+                  remarkPlugins={[remarkGfm, remarkMath]}
+                  rehypePlugins={[rehypeKatex]}
+                  components={{
                 img: ({ src, alt }: any) => {
                   if (src && typeof src === "string" && src.startsWith("#fig-")) {
                     const figIdx = parseInt(src.replace("#fig-", ""), 10);
@@ -451,7 +558,11 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
                         onClick={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          if (citation) handleCitationClick(citation);
+                          if (citation?.url) {
+                            window.open(citation.url, "_blank", "noopener,noreferrer");
+                          } else if (citation) {
+                            handleCitationClick(citation);
+                          }
                         }}
                         title={
                           citation
@@ -523,6 +634,7 @@ export const ChatBubble: React.FC<ChatBubbleProps> = ({
             >
               {formatInlineCitations(preprocessLatex(injectFiguresIntoContent(m.text, m.figures)))}
             </ReactMarkdown>
+            </>
             )}
             {isTypingStream && streamingMsgId === m.id && (
               <span

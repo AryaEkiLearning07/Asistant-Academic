@@ -17,6 +17,7 @@ import {
   Message,
   AttachedFileItem,
   ModelPreference,
+  GroundingMode,
 } from "../../types";
 import { ChatBubble } from "../chat/ChatBubble";
 import { ChatInputForm } from "../chat/ChatInputForm";
@@ -32,8 +33,9 @@ interface WorkspaceViewProps {
   setIsLeftSidebarOpen: (isOpen: boolean) => void;
   isPdfPanelOpen: boolean;
   setIsPdfPanelOpen: (isOpen: boolean) => void;
-  groundingMode: "library" | "academic";
-  setGroundingMode: (m: "library" | "academic") => void;
+  groundingMode: GroundingMode;
+  setGroundingMode: (m: GroundingMode) => void;
+
   modelPreference: ModelPreference;
   setModelPreference: (m: ModelPreference) => void;
   onOpenSubscriptionModal?: () => void;

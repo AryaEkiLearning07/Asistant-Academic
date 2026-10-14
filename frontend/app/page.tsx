@@ -13,7 +13,9 @@ import {
   ModalConfirmState,
   ModalAlertState,
   ModelPreference,
+  GroundingMode,
 } from "../types";
+
 
 // Modular UI Components
 import { AuthScreen } from "../components/auth/AuthScreen";
@@ -72,7 +74,7 @@ export default function AppRoot() {
   const [sendingStatusText, setSendingStatusText] = useState<string>("EPIONA sedang membaca literatur...");
   const [isTypingStream, setIsTypingStream] = useState<boolean>(false);
   const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
-  const [groundingMode, setGroundingMode] = useState<"library" | "academic">("library");
+  const [groundingMode, setGroundingMode] = useState<GroundingMode>("library");
   const [modelPreference, setModelPreference] = useState<ModelPreference>("gemini-2.0-flash");
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
   const [isSearchingSessions, setIsSearchingSessions] = useState(false);
@@ -796,7 +798,34 @@ export default function AppRoot() {
 
             try {
               const eventData = JSON.parse(dataStr);
-              if (eventData.type === "token") {
+              if (eventData.type === "sources") {
+                const rawSources = eventData.sources || [];
+                const parsedSources: CitationItem[] = rawSources.map((s: any, idx: number) => ({
+                  document_id: s.id ? String(s.id) : `search-${idx + 1}`,
+                  document_title: s.title || "Referensi Terverifikasi",
+                  page_number: 1,
+                  exact_quote: s.snippet || "",
+                  source_type: s.source_type || "academic_web",
+                  journal_name: s.journal || (s.source_type === "label" ? "FDA Drug Label" : s.source_type === "web" ? "Web Umum" : "Jurnal Ilmiah"),
+                  publication_year: s.year ? String(s.year) : undefined,
+                  authors: s.authors || [],
+                  doi: s.doi,
+                  url: s.url,
+                  pdf_url: s.pdf_url,
+                  abstract_snippet: s.snippet || s.full_text,
+                  evidence_level: s.evidence_level,
+                }));
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === msgId
+                      ? {
+                          ...m,
+                          citations: parsedSources,
+                        }
+                      : m
+                  )
+                );
+              } else if (eventData.type === "token") {
                 const tokenStr = eventData.token || "";
                 if (tokenStr) {
                   accumulatedText += tokenStr;
@@ -814,12 +843,13 @@ export default function AppRoot() {
                       ? {
                           ...m,
                           text: displayAnswer,
-                          citations: eventData.citations || [],
+                          citations: eventData.citations && eventData.citations.length > 0 ? eventData.citations : (m.citations || []),
                           figures: eventData.figures || [],
                         }
                       : m
                   )
                 );
+
                 if (typeof eventData.claude_quota_left === "number") {
                   setCurrentUser((prev) =>
                     prev ? { ...prev, claude_quota_left: eventData.claude_quota_left } : null
@@ -949,7 +979,7 @@ export default function AppRoot() {
     setAttachedFiles([]);
     setIsSending(true);
 
-    const stopStatus = startProgressiveStatus(groundingMode === "academic", currentAttachments.length > 0);
+    const stopStatus = startProgressiveStatus(groundingMode !== "library", currentAttachments.length > 0);
     const userMsg: Message = {
       id: Date.now().toString(),
       sender: "user",
@@ -1026,7 +1056,7 @@ export default function AppRoot() {
     if (!currentUser || isSending) return;
     setIsSending(true);
     const stopStatus = startProgressiveStatus(
-      groundingMode === "academic",
+      groundingMode !== "library",
       Boolean(userMsg.attachments && userMsg.attachments.length > 0)
     );
 
@@ -1100,7 +1130,7 @@ export default function AppRoot() {
       }
     }
 
-    const stopStatus = startProgressiveStatus(groundingMode === "academic", false);
+    const stopStatus = startProgressiveStatus(groundingMode !== "library", false);
 
     await performChatStreamingRequest(
       {

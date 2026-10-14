@@ -11,7 +11,7 @@ export interface CitationItem {
   is_verbatim?: boolean;
   // Metadata Tambahan Mode Web Akademik
 
-  source_type?: "local_pdf" | "academic_web";
+  source_type?: "local_pdf" | "academic_web" | "journal" | "label" | "web" | "document" | string;
   journal_name?: string;
   publication_year?: string;
   authors?: string[];
@@ -19,7 +19,10 @@ export interface CitationItem {
   url?: string;
   pdf_url?: string;
   abstract_snippet?: string;
+  evidence_level?: string;
 }
+
+export type GroundingMode = "library" | "academic" | "web";
 
 export interface FigureSnippet {
   document_id: string;

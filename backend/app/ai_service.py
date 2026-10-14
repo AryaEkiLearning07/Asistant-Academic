@@ -2044,22 +2044,48 @@ class AssistantAiService:
             citations=citations
         )
 
+    def stream_academic_chat(
+        self,
+        question: str,
+        academic_evidence: List[Any],
+        chat_history: Optional[List[Dict[str, Any]]] = None,
+        model_preference: Optional[str] = None
+    ):
+        """Streaming respon akademik & web berbasis SSE (Claude / Gemini / Fallback)."""
+        res = self.answer_academic_chat(
+            question=question,
+            academic_evidence=academic_evidence,
+            chat_history=chat_history,
+            model_preference=model_preference
+        )
+        full_text = res.answer or ""
+        words = re.findall(r"\S+\s*|\s+", full_text) or [full_text]
+        for w in words:
+            if w:
+                yield {"type": "token", "token": w}
+        yield {
+            "type": "end",
+            "answer": full_text,
+            "citations": res.citations,
+            "is_error": res.is_error
+        }
+
     def answer_academic_chat(
         self,
         question: str,
-        academic_evidence: List[Dict[str, Any]],
+        academic_evidence: List[Any],
         chat_history: Optional[List[Dict[str, Any]]] = None,
         model_preference: Optional[str] = None
     ) -> ChatResponse:
         """
-        Sintesis jawaban ilmiah berbasis bukti empiris (Evidence-Based Medicine) ala Perplexity & Consensus.
+        Sintesis jawaban ilmiah berbasis bukti empiris (Evidence-Based Medicine) ala Perplexity & Claude.
         Mengaitkan setiap temuan studi dengan nomor sitasi [1], [2] yang kaya metadata jurnal internasional.
         """
         if not academic_evidence:
             return ChatResponse(
                 answer=(
                     "### ⚠️ Tidak Ditemukan Literatur Terkait di Repositori Ilmiah\n\n"
-                    f"Pencarian terhadap topik *\"{question}\"* tidak menemukan naskah jurnal spesifik di basis data PubMed, PMC, maupun arXiv.\n\n"
+                    f"Pencarian terhadap topik *\"{question}\"* tidak menemukan naskah jurnal spesifik di basis data PubMed, PMC, maupun repositori akademik.\n\n"
                     "**Saran Penelusuran Ilmiah:**\n"
                     "- Gunakan nama generik obat resmi (misal: *Amlodipine*, *Metformin*, *Ibuprofen*).\n"
                     "- Gunakan istilah farmakologi atau nama penyakit standar (misal: *hipertensi*, *diabetes melitus tipe 2*, *preeklampsia*).\n"
@@ -2068,20 +2094,37 @@ class AssistantAiService:
                 citations=[]
             )
 
+        def _get_item_val(it: Any, *keys: str, default: Any = None) -> Any:
+            for k in keys:
+                if hasattr(it, k):
+                    val = getattr(it, k)
+                    if val is not None:
+                        return val
+                elif isinstance(it, dict) and k in it:
+                    val = it.get(k)
+                    if val is not None:
+                        return val
+            return default
+
         # Susun daftar sitasi dengan metadata asli tanpa fabrikasi
         citations: List[CitationItem] = []
         context_parts = []
+        valid_ids = set()
+
         for idx, item in enumerate(academic_evidence, 1):
-            result_num = item.get("result_id", idx)
-            title = item.get("document_title") or "Jurnal Riset"
-            journal = item.get("journal_name") or None
-            year = item.get("publication_year") or None
-            authors = item.get("authors") or []
+            result_num = _get_item_val(item, "result_id", default=idx)
+            valid_ids.add(str(result_num))
+            title = _get_item_val(item, "title", "document_title", default="Publikasi Ilmiah")
+            journal = _get_item_val(item, "journal", "journal_name", default=None)
+            year = _get_item_val(item, "year", "publication_year", default=None)
+            authors = _get_item_val(item, "authors", default=[])
             authors_str = ", ".join(authors[:2]) + (" et al." if len(authors) > 2 else "") if authors else ""
-            abstract = item.get("abstract_snippet") or ""
-            doi = item.get("doi") or None
-            url = item.get("url") or None
-            pdf_url = item.get("pdf_url") or None
+            abstract = _get_item_val(item, "snippet", "abstract_snippet", "full_text", default="")
+            doi = _get_item_val(item, "doi", default=None)
+            url = _get_item_val(item, "url", default=None)
+            pdf_url = _get_item_val(item, "pdf_url", default=None)
+            evidence_level = _get_item_val(item, "evidence_level", default=None)
+            source_type = _get_item_val(item, "source_type", default="journal")
 
             first_quote = abstract[:160].strip() if abstract else ""
 
@@ -2091,28 +2134,30 @@ class AssistantAiService:
                     document_title=title,
                     page_number=1,
                     exact_quote=first_quote,
-                    source_type="academic_web",
+                    source_type=source_type if source_type in ("journal", "label", "web", "document") else "academic_web",
                     journal_name=journal,
-                    publication_year=year,
+                    publication_year=str(year) if year else None,
                     authors=authors,
                     doi=doi,
                     url=url,
                     pdf_url=pdf_url,
-                    abstract_snippet=abstract or None
+                    abstract_snippet=abstract or None,
+                    evidence_level=evidence_level
                 )
             )
 
-            journal_desc = journal or "Jurnal tidak tercantum"
+            journal_desc = journal or "Jurnal/Basis Data Ilmiah"
             if year:
                 journal_desc += f" ({year})"
             penulis_desc = f" | PENULIS: {authors_str}" if authors_str else ""
             doi_desc = f"{doi}" if doi else "-"
             url_desc = f"({url})" if url else ""
+            ev_desc = f" [Bukti: {evidence_level}]" if evidence_level else ""
             abstrak_desc = abstract if abstract else "(Tidak ada abstrak tersedia)"
 
             context_parts.append(
                 f"[{result_num}] JUDUL ARTIKEL: {title}\n"
-                f"    JURNAL ILMIAH: {journal_desc}{penulis_desc}\n"
+                f"    SUMBER/JURNAL: {journal_desc}{penulis_desc}{ev_desc}\n"
                 f"    DOI / TAUTAN RESMI: {doi_desc} {url_desc}\n"
                 f"    ABSTRAK & TEMUAN EMPIRIS: {abstrak_desc}\n"
             )
@@ -2120,7 +2165,6 @@ class AssistantAiService:
         context_str = "\n".join(context_parts)
 
         # Validasi sitasi: Setiap [n] di teks harus punya sumber yang valid
-        valid_ids = {str(item.get("result_id", idx)) for idx, item in enumerate(academic_evidence, 1)}
         def _sanitize_answer(raw_ans: str) -> str:
             if not raw_ans:
                 return raw_ans
@@ -2130,24 +2174,24 @@ class AssistantAiService:
             cleaned = re.sub(r'\[(\d+)\](?!\()', _repl, raw_ans)
             return re.sub(r' +', ' ', cleaned).strip()
 
-
-        # Prompt Evidence-Based Medicine ala Perplexity Academic & Consensus
+        # Prompt Evidence-Based Medicine ala Claude & Perplexity Academic
         academic_prompt = (
-            "KONTEKS LITERATUR ILMIAH TERVERIFIKASI (NCBI PubMed / PMC / arXiv):\n"
+            "KONTEKS LITERATUR ILMIAH & WEB TERVERIFIKASI:\n"
             f"{context_str}\n\n"
             f"PERTANYAAN PENGGUNA / PENELITI:\n{question}\n\n"
-            "INSTRUKSI SINTESIS EVIDENCE-BASED MEDICINE (STANDAR PERPLEXITY & CONSENSUS):\n"
-            "1. Kalimat Pembuka (Inverted Pyramid): Jawab langsung esensi pertanyaan pada kalimat pertama berdasarkan konsensus literatur, lengkapi dengan sitasi [1], [2]. Dilarang salam pembuka robotik.\n"
-            "2. Pembahasan Berbasis Bukti (Evidence & Mechanisms): Uraikan mekanisme molekuler, efektivitas terapi, atau temuan studi secara analitis. Sebutkan nama jurnal atau penulis naskah (contoh: 'Dalam publikasi di Journal of Clinical Hypertension [1]...').\n"
+            "PETUNJUK SINTESIS EVIDENCE-BASED MEDICINE ALA CLAUDE:\n"
+            "1. Pembukaan (Inverted Pyramid): Jawab langsung esensi pertanyaan secara tegas dan mendalam pada kalimat pertama berdasarkan konsensus literatur, sertakan sitasi [1], [2]. Dilarang salam pembuka robotik atau mengulang teks pertanyaan pengguna.\n"
+            "2. Pembahasan Berbasis Bukti & Mekanisme: Uraikan mekanisme molekuler, efektivitas klinis, atau temuan studi secara analitis. Rujuk nama jurnal, badan resmi, atau penulis naskah (contoh: 'Dalam publikasi di Journal of Clinical Hypertension [1]...').\n"
             "3. Profil Keamanan & Implikasi Praktis: Sebutkan efek samping spesifik, kontraindikasi, atau anjuran dosis/klinis yang relevan dari bukti literatur.\n"
-            "4. Format Rumus Sains (Wajib LaTeX Presisi): Gunakan $...$ untuk notasi inline ($t_{1/2}$, $C_{max}$, $AUC$, dosis) dan $$...$$ untuk persamaan matematika/kimia.\n"
-            "5. Seluruh sitasi wajib menggunakan format kurung siku [1], [2], [3] yang berkorespondensi persis dengan daftar literatur di atas."
+            "4. Wajib Sitasi Faktual [n]: Setiap klaim fakta, data kuantitatif, atau temuan studi WAJIB disitasi dengan nomor kurung siku [1], [2] yang merujuk strictly pada nomor daftar literatur di atas. DILARANG KERAS mengarang sumber atau nomor sitasi di luar daftar.\n"
+            "5. Notasi LaTeX Presisi: Gunakan $...$ untuk simbol/rumus inline ($t_{1/2}$, $C_{max}$, $AUC$, dosis) dan $$...$$ untuk persamaan reaksi/matematika."
         )
 
         academic_system = (
             "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan telaah literatur biomedis farmasi terverifikasi. "
             "Anda beroperasi dengan prinsip Inverted Pyramid, presisi analitis mutlak, dan grounding 1:1 ke literatur ilmiah."
         )
+
 
         # 0. Routing Preferensi Model Pilihan Pengguna (Claude vs Gemini)
         pref = (model_preference or "").lower()
@@ -2323,38 +2367,50 @@ class AssistantAiService:
     def _synthesize_academic_offline(
         self,
         question: str,
-        academic_evidence: List[Dict[str, Any]],
+        academic_evidence: List[Any],
         citations: List[CitationItem]
     ) -> ChatResponse:
         """
-        Sintesis akademik mendalam berbasis bukti empiris naskah riil (PubMed / PMC / arXiv).
+        Sintesis akademik mendalam berbasis bukti empiris naskah riil (PubMed / PMC / arXiv / openFDA).
         Menghasilkan telaah komprehensif berbasis bukti aktual dari abstrak publikasi.
         """
+        def _get(it: Any, *keys: str, default: Any = "") -> Any:
+            for k in keys:
+                if hasattr(it, k):
+                    val = getattr(it, k)
+                    if val is not None:
+                        return val
+                elif isinstance(it, dict) and k in it:
+                    val = it.get(k)
+                    if val is not None:
+                        return val
+            return default
+
         total_sources = len(academic_evidence)
         first_paper = academic_evidence[0]
-        fp_id = first_paper.get("result_id", 1)
-        fp_title = first_paper.get("document_title", "Studi Terakreditasi")
-        fp_journal = first_paper.get("journal_name", "PubMed")
-        fp_year = first_paper.get("publication_year") or ""
+        fp_id = _get(first_paper, "result_id", default=1)
+        fp_title = _get(first_paper, "title", "document_title", default="Studi Terakreditasi")
+        fp_journal = _get(first_paper, "journal", "journal_name", default="PubMed")
+        fp_year = _get(first_paper, "year", "publication_year", default="")
         fp_year_str = f" ({fp_year})" if fp_year else ""
-        fp_abs = first_paper.get("abstract_snippet", "").strip()
+        fp_abs = str(_get(first_paper, "snippet", "abstract_snippet", default="")).strip()
 
         body = [
-            f"Berdasarkan penelusuran terhadap **{total_sources} publikasi ilmiah terakreditasi** (NCBI PubMed, PMC, dan arXiv) mengenai *\"{question}\"*, telaah literatur menunjukkan temuan empiris sebagai berikut [{fp_id}]:\n",
+            f"Berdasarkan konsensus dari **{total_sources} publikasi ilmiah terverifikasi** mengenai *\"{question}\"*, telaah literatur menunjukkan temuan empiris sebagai berikut [{fp_id}]:\n",
             "### 1. Konsensus Ilmiah & Temuan Kunci",
             f"Publikasi utama dalam *{fp_journal}*{fp_year_str} berjudul *\"{fp_title}\"* [{fp_id}] mengonfirmasi:",
             f"> {fp_abs if fp_abs else 'Data klinis mendukung peran penting intervensi farmakoterapi terkait dalam modulasi respon biologis pasien.'}\n",
-            "### 2. Matriks Bukti Literatur Terverifikasi (PubMed / PMC)",
+            "### 2. Matriks Bukti Literatur Terverifikasi",
             "| Sitasi | Judul Publikasi & Jurnal | Tahun | Temuan Empiris Utama / Abstrak |",
             "| :--- | :--- | :---: | :--- |"
         ]
 
         for idx, item in enumerate(academic_evidence, 1):
-            r_id = item.get("result_id", idx)
-            t = item.get("document_title", "Studi Klinis")
-            j = item.get("journal_name", "PubMed")
-            y = item.get("publication_year") or "-"
-            ab = item.get("abstract_snippet", "").strip()
+            r_id = _get(item, "result_id", default=idx)
+            t = _get(item, "title", "document_title", default="Studi Klinis")
+            j = _get(item, "journal", "journal_name", default="Basis Data Ilmiah")
+            y = _get(item, "year", "publication_year", default="-")
+            ab = str(_get(item, "snippet", "abstract_snippet", default="")).strip()
             ab_clean = " ".join(ab.split())[:160] + "..." if len(ab) > 160 else ab
             if not ab_clean:
                 ab_clean = f"Kajian klinis terindeks dalam {j}."
@@ -2362,8 +2418,8 @@ class AssistantAiService:
 
         body.append(
             "\n### 3. Evaluasi Klinis & Tindak Lanjut\n"
-            f"- **Konsistensi Data**: Temuan di atas merujuk langsung pada naskah yang terindeks resmi pada pangkalan data PubMed [{fp_id}].\n"
-            "- **Verifikasi Rujukan**: Seluruh naskah lengkap, DOI, dan tautan publikasi asli dapat diakses langsung pada panel rujukan di sisi kanan."
+            f"- **Konsistensi Data**: Temuan di atas merujuk langsung pada naskah yang terindeks resmi pada pangkalan data ilmiah [{fp_id}].\n"
+            "- **Verifikasi Rujukan**: Seluruh naskah lengkap, DOI, dan tautan publikasi asli dapat diakses langsung melalui kartu sumber rujukan."
         )
 
         return ChatResponse(

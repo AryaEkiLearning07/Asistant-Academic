@@ -51,6 +51,7 @@ class CitationItem(BaseModel):
     url: Optional[str] = Field(default=None, description="Tautan publikasi resmi jurnal")
     pdf_url: Optional[str] = Field(default=None, description="Tautan naskah lengkap / PDF open access")
     abstract_snippet: Optional[str] = Field(default=None, description="Abstrak lengkap atau cuplikan metodologi studi")
+    evidence_level: Optional[str] = Field(default=None, description="Tingkat bukti ilmiah (meta_analysis, rct, drug_label, dll)")
 
 class FigureSnippet(BaseModel):
     document_id: str

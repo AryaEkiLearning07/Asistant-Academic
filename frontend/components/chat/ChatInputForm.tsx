@@ -1,6 +1,6 @@
 import React from "react";
-import { Send, Plus, Mic, MicOff, X, Library, Globe, Zap, Sparkles, Crown, ChevronDown, Check, Lock } from "lucide-react";
-import { AttachedFileItem, ModelPreference, UserProfile } from "../../types";
+import { Send, Plus, Mic, MicOff, X, Library, Globe, Zap, Sparkles, Crown, ChevronDown, Check, Lock, BookOpen } from "lucide-react";
+import { AttachedFileItem, ModelPreference, UserProfile, GroundingMode } from "../../types";
 import { FileFormatIcon } from "../library/FileFormatIcon";
 
 interface ChatInputFormProps {
@@ -10,9 +10,10 @@ interface ChatInputFormProps {
   setInputQuestion: (val: string) => void;
   isSending: boolean;
   isRecording: boolean;
-  groundingMode: "library" | "academic";
-  setGroundingMode: (m: "library" | "academic") => void;
+  groundingMode: GroundingMode;
+  setGroundingMode: (m: GroundingMode) => void;
   modelPreference: ModelPreference;
+
   setModelPreference: (m: ModelPreference) => void;
   currentUser?: UserProfile | null;
   onOpenSubscriptionModal?: () => void;
@@ -402,7 +403,24 @@ export const ChatInputForm: React.FC<ChatInputFormProps> = ({
                   ? "text-[#9AA9B5] hover:text-[#E6EDF2]"
                   : "text-[#5B6B78] hover:text-[#12202B]"
               }`}
-              title="Riset literatur terbuka (PubMed, arXiv, jurnal farmasi)"
+              title="Riset akademik terverifikasi (PubMed, Semantic Scholar, Europe PMC, openFDA)"
+            >
+              <BookOpen className="w-3 h-3 shrink-0" />
+              <span>Akademik</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setGroundingMode("web")}
+              className={`flex items-center gap-1 ${isHero ? "px-2 sm:px-2.5 py-1" : "px-1.5 sm:px-2 py-0.5"} rounded-md text-[10.5px] font-semibold transition cursor-pointer ${
+                groundingMode === "web"
+                  ? theme === "dark"
+                    ? "bg-[#34D3BE] text-[#12161A] shadow-2xs font-bold"
+                    : "bg-[#0F766E] text-white shadow-2xs font-bold"
+                  : theme === "dark"
+                  ? "text-[#9AA9B5] hover:text-[#E6EDF2]"
+                  : "text-[#5B6B78] hover:text-[#12202B]"
+              }`}
+              title="Riset terbuka web umum & sumber multidisiplin"
             >
               <Globe className="w-3 h-3 shrink-0" />
               <span>Web</span>

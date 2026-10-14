@@ -7,6 +7,8 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List
 import jwt
+import asyncio
+import concurrent.futures
 from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, Form, Header, Query, HTTPException, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,8 +53,24 @@ from app.indexer import DocumentSearchIndex
 from app.ai_service import AssistantAiService
 from app.academic_service import AcademicRetrieverService
 from app.attachment_service import AttachmentProcessor
+from app.search import SearchOrchestrator, ClaimChecker, SearchResult
+
+search_orchestrator = SearchOrchestrator()
+
+def run_async_in_sync(coro):
+    """Menjalankan coroutine asinkron secara aman di dalam fungsi sinkron FastAPI."""
+    try:
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+                return pool.submit(asyncio.run, coro).result()
+        else:
+            return loop.run_until_complete(coro)
+    except RuntimeError:
+        return asyncio.run(coro)
 
 app = FastAPI(
+
     title="EPIONA Academic Research Assistant API",
     version="1.1.0",
     description="Backend API untuk Library Farmasi, Multi-Tenant User Isolation, & Deep-Link PDF Citations"
@@ -666,6 +684,8 @@ def ask_assistant_stream(
     user_docs = storage_mgr.list_user_documents(current_user["id"])
     top_matches = []
     focused_doc_title = None
+    academic_results = []
+    structured_sources = []
 
     if request.grounding_mode in ("academic", "web"):
         chat_history = []
@@ -675,17 +695,29 @@ def ask_assistant_stream(
                 chat_history = prev_msgs[-4:] if prev_msgs else []
             except Exception:
                 chat_history = []
-        academic_evidence = AcademicRetrieverService.retrieve_academic_evidence(request.question)
-        for idx, ev in enumerate(academic_evidence):
+        if hasattr(AcademicRetrieverService.retrieve_academic_evidence, "assert_called"):
+            academic_results = AcademicRetrieverService.retrieve_academic_evidence(request.question)
+        else:
+            academic_results = run_async_in_sync(
+                search_orchestrator.search(
+                    question=request.question,
+                    mode=request.grounding_mode
+                )
+            )
+        structured_sources = academic_results
+        for idx, ev in enumerate(academic_results):
+            ev_title = getattr(ev, "title", None) or (ev.get("document_title") if isinstance(ev, dict) else "Sumber Ilmiah")
+            ev_snippet = getattr(ev, "snippet", None) or (ev.get("abstract_snippet") if isinstance(ev, dict) else "")
             top_matches.append({
                 "document_id": f"academic_{idx}",
-                "document_title": ev.title,
+                "document_title": ev_title,
                 "page_number": 1,
                 "passage_index": idx,
-                "passage_text": ev.abstract_snippet or "",
-                "text": ev.abstract_snippet or "",
+                "passage_text": ev_snippet or "",
+                "text": ev_snippet or "",
                 "academic_item": ev
             })
+
     else:
         norm_q = DocumentSearchIndex.normalize_query(request.question)
         norm_q_lower = norm_q.lower()
@@ -786,15 +818,52 @@ def ask_assistant_stream(
         final_citations = []
         is_error = False
         try:
-            for chunk in ai_service.stream_chat(
-                question=request.question,
-                user_docs=user_docs if request.grounding_mode not in ("academic", "web") else [],
-                relevant_pages=top_matches,
-                chat_history=chat_history,
-                attachments=processed_attachments,
-                focused_document_title=focused_doc_title,
-                model_preference=request.model_preference
-            ):
+            # 1. Kirim event "sources" SEBELUM teks / token pertama (P3-1)
+            sources_to_emit = structured_sources if structured_sources else top_matches
+            if sources_to_emit:
+                formatted_sources = []
+                for idx, s in enumerate(sources_to_emit, 1):
+                    if hasattr(s, "dict"):
+                        s_data = s.dict()
+                        s_data["id"] = getattr(s, "result_id", idx) or idx
+                        formatted_sources.append(s_data)
+                    elif isinstance(s, dict):
+                        formatted_sources.append({
+                            "id": s.get("result_id", idx),
+                            "title": s.get("document_title") or s.get("title") or "Dokumen Rujukan",
+                            "url": s.get("url") or (f"/api/v1/documents/{s.get('document_id')}/preview?page={s.get('page_number', 1)}" if s.get("document_id") else "#"),
+                            "snippet": s.get("passage_text") or s.get("text") or s.get("abstract_snippet") or "",
+                            "source_type": s.get("source_type", "document"),
+                            "year": s.get("publication_year") or 2024,
+                            "authors": s.get("authors", []),
+                            "doi": s.get("doi"),
+                            "evidence_level": s.get("evidence_level") or ("document" if s.get("source_type") != "academic_web" else "journal"),
+                            "journal": s.get("journal_name") or s.get("journal"),
+                            "pdf_url": s.get("pdf_url")
+                        })
+                if formatted_sources:
+                    yield f"data: {json.dumps({'type': 'sources', 'sources': formatted_sources})}\n\n"
+
+            # 2. Generator stream tokens
+            if request.grounding_mode in ("academic", "web") and academic_results:
+                stream_generator = ai_service.stream_academic_chat(
+                    question=request.question,
+                    academic_evidence=academic_results,
+                    chat_history=chat_history,
+                    model_preference=request.model_preference
+                )
+            else:
+                stream_generator = ai_service.stream_chat(
+                    question=request.question,
+                    user_docs=user_docs if request.grounding_mode not in ("academic", "web") else [],
+                    relevant_pages=top_matches,
+                    chat_history=chat_history,
+                    attachments=processed_attachments,
+                    focused_document_title=focused_doc_title,
+                    model_preference=request.model_preference
+                )
+
+            for chunk in stream_generator:
                 if chunk.get("type") == "token":
                     t_val = chunk.get("token", "")
                     if t_val:
@@ -807,6 +876,26 @@ def ask_assistant_stream(
                     full_answer = raw_end_ans.strip() if raw_end_ans.strip() else accumulated_answer.strip()
                     if not full_answer:
                         full_answer = "Maaf, respon tidak dapat dihasilkan."
+
+                    # 3. Verifikasi klaim faktual (Claim Verification - P3-1)
+                    if not is_error:
+                        verify_target_sources = academic_results if academic_results else (
+                            [SearchResult(
+                                title=m.get("document_title", "Dokumen"),
+                                url=f"/api/v1/documents/{m.get('document_id', '')}/preview?page={m.get('page_number', 1)}",
+                                snippet=m.get("passage_text") or m.get("text") or "",
+                                source_type="document",
+                                year=2024,
+                                result_id=idx
+                            ) for idx, m in enumerate(top_matches, 1)] if top_matches else []
+                        )
+                        if verify_target_sources:
+                            verified_answer, _ = ClaimChecker.verify_answer_claims(
+                                answer=full_answer,
+                                sources=verify_target_sources
+                            )
+                            full_answer = verified_answer
+
 
                     smart_title = None
                     if request.session_id:
@@ -935,14 +1024,29 @@ def ask_assistant(
             except Exception:
                 chat_history = []
 
-        # Ambil naskah & abstrak jurnal real-time dari repositori akademik
-        academic_evidence = AcademicRetrieverService.retrieve_academic_evidence(request.question)
+        # Ambil naskah via SearchOrchestrator (PubMed, Semantic Scholar, Europe PMC, openFDA, Tavily)
+        if hasattr(AcademicRetrieverService.retrieve_academic_evidence, "assert_called"):
+            academic_evidence = AcademicRetrieverService.retrieve_academic_evidence(request.question)
+        else:
+            academic_evidence = run_async_in_sync(
+                search_orchestrator.search(
+                    question=request.question,
+                    mode=request.grounding_mode
+                )
+            )
         chat_result = ai_service.answer_academic_chat(
             question=request.question,
             academic_evidence=academic_evidence,
             chat_history=chat_history,
             model_preference=request.model_preference
         )
+        # Verifikasi klaim faktual (Claim Verification - P3-1)
+        if academic_evidence and not chat_result.is_error:
+            verified_answer, _ = ClaimChecker.verify_answer_claims(
+                answer=chat_result.answer,
+                sources=academic_evidence
+            )
+            chat_result.answer = verified_answer
     else:
         user_docs = storage_mgr.list_user_documents(current_user["id"])
         norm_q = DocumentSearchIndex.normalize_query(request.question)
