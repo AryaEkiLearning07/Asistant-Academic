@@ -32,18 +32,15 @@ from app.models import ChatResponse, CitationItem
 logger = logging.getLogger("epiona.ai_service")
 
 EPIONA_SYSTEM_PROMPT = (
-    "Anda adalah EPIONA Academic Research Assistant (dikembangkan oleh Arya Eki Nur Seputro), asisten kecerdasan akademik riset literatur, farmasi, biomedis, sains, dan komputasi.\n\n"
-    "IDENTITAS & GAYA KOMUNIKASI:\n"
-    "- Bertindaklah adaptif, luwes, dan natural selayaknya model AI kelas atas (Gemini, Claude, ChatGPT). Ikuti gaya pengguna (bahasa mudah, analogi, dsb.).\n"
-    "- Gunakan struktur Inverted Pyramid: intisari langsung di awal tanpa pernah mengulang pertanyaan mentah pengguna.\n"
-    "- Format: Markdown mengalir, sub-topik (###), notasi LaTeX ($...$ atau $$...$$) untuk rumus sains/matematika. Hindari template robotik.\n\n"
-    "KEBIJAKAN KONTEKS MYLIBRARY (ANTI-HALUSINASI BERTINGKAT):\n"
-    "1. Dokumen MyLibrary adalah KONTEKS TAMBAHAN, BUKAN PEMBATAS.\n"
-    "2. Jika dokumen relevan ada: jawab berbasis fakta dengan sitasi inline [1] dan baris metadata akhir: "
+    "Anda adalah EPIONA Academic Research Assistant (dikembangkan oleh Arya Eki Nur Seputro), asisten kecerdasan akademik, farmasi, sains, dan riset literatur ilmiah.\n\n"
+    "PEDOMAN RESPON:\n"
+    "1. Jawab langsung esensi pertanyaan pengguna terlebih dahulu pada kalimat pembuka (Inverted Pyramid). Gunakan bahasa natural yang mudah dipahami dan sertakan analogi yang relevan jika membantu memperjelas konsep.\n"
+    "2. Jangan gunakan salam pembuka robotik, jangan mengulang mentah-mentah pertanyaan pengguna, dan hindari template kaku.\n"
+    "3. Sitasi inline [n] HANYA dicantumkan untuk klaim faktual atau data spesifik yang bersumber langsung dari konteks/sumber yang disediakan. DILARANG KERAS mengarang sitasi fiktif.\n"
+    "4. Jika informasi tidak ditemukan dalam dokumen atau di luar konteks yang tersedia, tetap jawab langsung pertanyaan pengguna secara komprehensif berbasis pengetahuan umum yang valid dan akurat tanpa membuat sitasi fiktif.\n"
+    "5. Format: Gunakan Markdown yang rapi, poin-poin terstruktur jika diperlukan, notasi LaTeX ($...$ atau $$...$$) untuk rumus sains/matematika/parameter klinis, dan baris metadata akhir jika relevan: "
     "CITATIONS_JSON:[{\"document_id\":\"...\",\"document_title\":\"...\",\"page_number\":1,\"exact_quote\":\"...\"}].\n"
-    "3. Jika di luar dokumen/perpustakaan kosong: TETAP jawab lengkap dan mendalam dari pengetahuan umum. "
-    "JANGAN gunakan template penolakan kaku. Berikan catatan kecil di akhir: *(Tidak ditemukan di dokumenmu.)*\n"
-    "4. Jangan karang sitasi/halaman fiktif. Berikan peringatan singkat untuk dosis/angka klinis tanpa sumber."
+    "6. Berikan peringatan singkat untuk dosis/angka klinis jika tanpa sumber monografi resmi."
 )
 
 # Alias backward compatibility
@@ -356,13 +353,16 @@ class AssistantAiService:
     def answer_chat(
         self,
         question: str,
-        user_docs: List[Dict[str, Any]],
-        relevant_pages: List[Dict[str, Any]],
+        user_docs: Optional[List[Dict[str, Any]]] = None,
+        relevant_pages: Optional[List[Dict[str, Any]]] = None,
         chat_history: Optional[List[Dict[str, Any]]] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         focused_document_title: Optional[str] = None,
-        model_preference: Optional[str] = None
+        model_preference: Optional[str] = None,
+        academic_evidence: Optional[List[Any]] = None
     ) -> ChatResponse:
+        user_docs = user_docs or []
+        relevant_pages = relevant_pages or []
         """
         Titik masuk utama cerdas untuk percakapan (Hybrid Conversational + Grounded RAG + Multimodal Attachments).
         Membedakan pertanyaan identitas/sapaan vs pertanyaan isi literatur/lampiran, dengan dukungan riwayat multi-turn.
@@ -453,7 +453,8 @@ class AssistantAiService:
                         chat_history=chat_history,
                         doc_attachments=doc_attachments,
                         image_attachments=image_attachments,
-                        focused_document_title=focused_document_title
+                        focused_document_title=focused_document_title,
+                        academic_evidence=academic_evidence
                     )
                 except Exception as e:
                     logger.warning(f"Preferred Anthropic error: {e}. Mengalihkan ke OpenRouter jika tersedia.")
@@ -472,7 +473,8 @@ class AssistantAiService:
                         doc_attachments=doc_attachments,
                         image_attachments=image_attachments,
                         focused_document_title=focused_document_title,
-                        is_openrouter=True
+                        is_openrouter=True,
+                        academic_evidence=academic_evidence
                     )
                 except Exception as e:
                     logger.warning(f"Preferred OpenRouter Claude error: {e}.")
@@ -503,7 +505,8 @@ class AssistantAiService:
                         chat_history=chat_history,
                         doc_attachments=doc_attachments,
                         image_attachments=image_attachments,
-                        focused_document_title=focused_document_title
+                        focused_document_title=focused_document_title,
+                        academic_evidence=academic_evidence
                     )
                 except Exception as e:
                     logger.warning(f"Preferred Gemini Pool error: {e}. Mengalihkan ke provider berikutnya.")
@@ -533,7 +536,8 @@ class AssistantAiService:
                         doc_attachments=doc_attachments,
                         image_attachments=image_attachments,
                         focused_document_title=focused_document_title,
-                        is_openrouter=False
+                        is_openrouter=False,
+                        academic_evidence=academic_evidence
                     )
                 except Exception as e:
                     logger.warning(f"9Router ({r_model}) error: {e}.")
@@ -553,7 +557,8 @@ class AssistantAiService:
                     doc_attachments=doc_attachments,
                     image_attachments=image_attachments,
                     focused_document_title=focused_document_title,
-                    is_openrouter=True
+                    is_openrouter=True,
+                    academic_evidence=academic_evidence
                 )
             except Exception as e:
                 logger.warning(f"OpenRouter error: {e}.")
@@ -569,7 +574,8 @@ class AssistantAiService:
                     chat_history=chat_history,
                     doc_attachments=doc_attachments,
                     image_attachments=image_attachments,
-                    focused_document_title=focused_document_title
+                    focused_document_title=focused_document_title,
+                    academic_evidence=academic_evidence
                 )
             except Exception as e:
                 logger.warning(f"Anthropic error: {e}.")
@@ -585,7 +591,8 @@ class AssistantAiService:
                     chat_history=chat_history,
                     doc_attachments=doc_attachments,
                     image_attachments=image_attachments,
-                    focused_document_title=focused_document_title
+                    focused_document_title=focused_document_title,
+                    academic_evidence=academic_evidence
                 )
             except Exception as e:
                 logger.warning(f"Gemini Pool error: {e}.")
@@ -600,33 +607,45 @@ class AssistantAiService:
                     user_docs=user_docs,
                     chat_history=chat_history,
                     doc_attachments=doc_attachments,
-                    focused_document_title=focused_document_title
+                    focused_document_title=focused_document_title,
+                    academic_evidence=academic_evidence
                 )
             except Exception as e:
                 logger.warning(f"Groq error: {e}.")
                 provider_errors.append(f"Groq: {e}")
 
-        # Item 7: Jika seluruh provider cloud mengalami kendala, alihkan ke sintesis cerdas lokal
-        if has_configured_providers and provider_errors:
-            return self._local_smart_synthesis(
-                question=question,
-                relevant_pages=relevant_pages,
-                user_docs=user_docs,
-                is_conversational=is_conversational,
-                doc_attachments=doc_attachments,
-                image_attachments=image_attachments,
-                focused_document_title=focused_document_title
-            )
+        # Fallback jika semua provider LLM gagal: kirim pesan error jujur + tetap sertakan rujukan sumber
+        fallback_citations = []
+        if academic_evidence:
+            for idx, item in enumerate(academic_evidence, 1):
+                r_id = getattr(item, "result_id", idx) if hasattr(item, "result_id") else (item.get("result_id", idx) if isinstance(item, dict) else idx)
+                t = getattr(item, "title", None) or (item.get("document_title") or item.get("title") if isinstance(item, dict) else "Publikasi Ilmiah")
+                j = getattr(item, "journal", None) or (item.get("journal_name") or item.get("journal") if isinstance(item, dict) else None)
+                y = getattr(item, "year", None) or (item.get("publication_year") or item.get("year") if isinstance(item, dict) else None)
+                snip = getattr(item, "snippet", None) or (item.get("abstract_snippet") or item.get("snippet") if isinstance(item, dict) else "")
+                fallback_citations.append(CitationItem(
+                    document_id=f"academic-{r_id}",
+                    document_title=t,
+                    page_number=1,
+                    exact_quote=snip[:160] if snip else "",
+                    source_type="journal",
+                    journal_name=j,
+                    publication_year=str(y) if y else None
+                ))
+        elif relevant_pages:
+            for idx, p in enumerate(relevant_pages, 1):
+                fallback_citations.append(CitationItem(
+                    document_id=p.get("document_id", f"doc-{idx}"),
+                    document_title=p.get("document_title", "Dokumen Referensi"),
+                    page_number=p.get("page_number", 1),
+                    exact_quote=""
+                ))
 
-        # 7. Fallback lokal cerdas jika offline / tanpa API key sama sekali
-        return self._local_smart_synthesis(
-            question=question,
-            relevant_pages=relevant_pages,
-            user_docs=user_docs,
-            is_conversational=is_conversational,
-            doc_attachments=doc_attachments,
-            image_attachments=image_attachments,
-            focused_document_title=focused_document_title
+        logger.error(f"Semua provider LLM gagal: {provider_errors}. Mengembalikan status error jujur.")
+        return ChatResponse(
+            answer="AI sedang tidak tersambung, coba lagi",
+            citations=fallback_citations,
+            is_error=True
         )
 
     def _call_openai_compatible(
@@ -641,7 +660,8 @@ class AssistantAiService:
         doc_attachments: Optional[List[Dict[str, Any]]] = None,
         image_attachments: Optional[List[Dict[str, Any]]] = None,
         focused_document_title: Optional[str] = None,
-        is_openrouter: bool = False
+        is_openrouter: bool = False,
+        academic_evidence: Optional[List[Any]] = None
     ) -> ChatResponse:
         context_parts = []
         if doc_attachments:
@@ -661,6 +681,18 @@ class AssistantAiService:
                 f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara komprehensif, presisi, dan profesional. "
                 f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
             )
+
+        if academic_evidence:
+            academic_lines = []
+            for idx, item in enumerate(academic_evidence, 1):
+                r_id = getattr(item, "result_id", idx) if hasattr(item, "result_id") else (item.get("result_id", idx) if isinstance(item, dict) else idx)
+                t = getattr(item, "title", None) or (item.get("document_title") or item.get("title") if isinstance(item, dict) else "Publikasi Ilmiah")
+                j = getattr(item, "journal", None) or (item.get("journal_name") or item.get("journal") if isinstance(item, dict) else None)
+                y = getattr(item, "year", None) or (item.get("publication_year") or item.get("year") if isinstance(item, dict) else None)
+                snip = getattr(item, "snippet", None) or (item.get("abstract_snippet") or item.get("snippet") if isinstance(item, dict) else "")
+                j_info = f" ({j}, {y})" if j and y else (f" ({j})" if j else (f" ({y})" if y else ""))
+                academic_lines.append(f"[{r_id}] {t}{j_info}\n    Temuan/Abstrak: {snip}")
+            context_parts.append("--- KONTEKS LITERATUR ILMIAH & WEB TERVERIFIKASI ---\n" + "\n\n".join(academic_lines))
 
         if context_parts:
             full_context = "\n\n".join(context_parts)
@@ -705,13 +737,13 @@ class AssistantAiService:
         payload = {
             "model": model,
             "messages": messages_payload,
-            "temperature": 0.75 if (not relevant_pages and not doc_attachments) else 0.4,
+            "temperature": 0.75 if (not relevant_pages and not doc_attachments and not academic_evidence) else 0.4,
             "max_tokens": 3500
         }
 
-        # Coba panggil dengan response_format; jika model tidak support (HTTP 400), retry tanpa parameter itu
+        # Panggil dengan timeout 45 detik
         raw_resp = ""
-        http_timeout = 35 if is_openrouter else 6
+        http_timeout = 45
         try:
             req = urllib.request.Request(
                 endpoint,
@@ -738,7 +770,7 @@ class AssistantAiService:
         accumulated_text = self._extract_text_from_raw_openai(raw_resp)
 
         data = self._safe_parse_json(accumulated_text)
-        return self._build_chat_response(data, relevant_pages)
+        return self._build_chat_response(data, relevant_pages, academic_evidence)
 
     def _call_anthropic_direct(
         self,
@@ -748,7 +780,8 @@ class AssistantAiService:
         chat_history: Optional[List[Dict[str, Any]]] = None,
         doc_attachments: Optional[List[Dict[str, Any]]] = None,
         image_attachments: Optional[List[Dict[str, Any]]] = None,
-        focused_document_title: Optional[str] = None
+        focused_document_title: Optional[str] = None,
+        academic_evidence: Optional[List[Any]] = None
     ) -> ChatResponse:
         """Memanggil Anthropic Claude Messages API resmi."""
         context_parts = []
@@ -769,6 +802,18 @@ class AssistantAiService:
                 f"Pertanyaan saat ini mungkin tidak terdapat di modul tersebut. Jelaskan konsepnya secara komprehensif, presisi, dan profesional. "
                 f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
             )
+
+        if academic_evidence:
+            academic_lines = []
+            for idx, item in enumerate(academic_evidence, 1):
+                r_id = getattr(item, "result_id", idx) if hasattr(item, "result_id") else (item.get("result_id", idx) if isinstance(item, dict) else idx)
+                t = getattr(item, "title", None) or (item.get("document_title") or item.get("title") if isinstance(item, dict) else "Publikasi Ilmiah")
+                j = getattr(item, "journal", None) or (item.get("journal_name") or item.get("journal") if isinstance(item, dict) else None)
+                y = getattr(item, "year", None) or (item.get("publication_year") or item.get("year") if isinstance(item, dict) else None)
+                snip = getattr(item, "snippet", None) or (item.get("abstract_snippet") or item.get("snippet") if isinstance(item, dict) else "")
+                j_info = f" ({j}, {y})" if j and y else (f" ({j})" if j else (f" ({y})" if y else ""))
+                academic_lines.append(f"[{r_id}] {t}{j_info}\n    Temuan/Abstrak: {snip}")
+            context_parts.append("--- KONTEKS LITERATUR ILMIAH & WEB TERVERIFIKASI ---\n" + "\n\n".join(academic_lines))
 
         if context_parts:
             full_context = "\n\n".join(context_parts)
@@ -815,7 +860,7 @@ class AssistantAiService:
             "max_tokens": 3000,
             "system": system_payload,
             "messages": messages,
-            "temperature": 0.7 if (not relevant_pages and not doc_attachments) else 0.35
+            "temperature": 0.7 if (not relevant_pages and not doc_attachments and not academic_evidence) else 0.35
         }
 
         endpoint = f"{self.anthropic_base_url}/v1/messages"
@@ -830,12 +875,12 @@ class AssistantAiService:
             method="POST"
         )
 
-        with urllib.request.urlopen(req, timeout=35) as resp:
+        with urllib.request.urlopen(req, timeout=45) as resp:
             resp_body = resp.read().decode("utf-8")
         anthropic_data = json.loads(resp_body)
         raw_text = anthropic_data["content"][0]["text"]
         data = self._safe_parse_json(raw_text)
-        return self._build_chat_response(data, relevant_pages)
+        return self._build_chat_response(data, relevant_pages, academic_evidence)
 
     def _stream_anthropic(
         self,
@@ -1098,7 +1143,8 @@ class AssistantAiService:
         chat_history: Optional[List[Dict[str, Any]]] = None,
         attachments: Optional[List[Dict[str, Any]]] = None,
         focused_document_title: Optional[str] = None,
-        model_preference: Optional[str] = None
+        model_preference: Optional[str] = None,
+        academic_evidence: Optional[List[Any]] = None
     ):
         """Streaming chat berbasis SSE (Claude / OpenRouter stream) dengan fallback non-stream."""
         pref = (model_preference or "").lower()
@@ -1135,8 +1181,8 @@ class AssistantAiService:
         )
         is_conversational = (is_creator_or_identity or has_short_greeting or has_phrase) and not attachments
 
-        # Coba stream Claude langsung jika dipilih
-        if prefer_claude:
+        # Coba stream Claude langsung jika dipilih (hanya jika tidak ada academic_evidence)
+        if prefer_claude and not academic_evidence:
             if self.anthropic_api_key:
                 try:
                     yield from self._stream_anthropic(
@@ -1167,8 +1213,8 @@ class AssistantAiService:
                 except Exception as e:
                     logger.warning(f"Streaming OpenRouter error: {e}.")
 
-        # Coba stream Gemini langsung jika dipilih atau default (ketika keys tersedia)
-        if not prefer_claude and self.gemini_keys:
+        # Coba stream Gemini langsung jika dipilih atau default (ketika keys tersedia dan tidak ada academic_evidence)
+        if not prefer_claude and self.gemini_keys and not academic_evidence:
             try:
                 yield from self._stream_gemini(
                     question=question,
@@ -1191,7 +1237,8 @@ class AssistantAiService:
             chat_history=chat_history,
             attachments=attachments,
             focused_document_title=focused_document_title,
-            model_preference=model_preference
+            model_preference=model_preference,
+            academic_evidence=academic_evidence
         )
         ans_text = (fallback_res.answer or "").strip()
         if not ans_text:
@@ -1391,7 +1438,8 @@ class AssistantAiService:
         chat_history: Optional[List[Dict[str, Any]]] = None,
         doc_attachments: Optional[List[Dict[str, Any]]] = None,
         image_attachments: Optional[List[Dict[str, Any]]] = None,
-        focused_document_title: Optional[str] = None
+        focused_document_title: Optional[str] = None,
+        academic_evidence: Optional[List[Any]] = None
     ) -> ChatResponse:
         """Memanggil Google Gemini dengan rotasi multi-key jika terjadi HTTP 429, lengkap dengan multimodal vision & document grounding."""
         if not self.gemini_keys:
@@ -1416,6 +1464,18 @@ class AssistantAiService:
                 f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
             )
 
+        if academic_evidence:
+            academic_lines = []
+            for idx, item in enumerate(academic_evidence, 1):
+                r_id = getattr(item, "result_id", idx) if hasattr(item, "result_id") else (item.get("result_id", idx) if isinstance(item, dict) else idx)
+                t = getattr(item, "title", None) or (item.get("document_title") or item.get("title") if isinstance(item, dict) else "Publikasi Ilmiah")
+                j = getattr(item, "journal", None) or (item.get("journal_name") or item.get("journal") if isinstance(item, dict) else None)
+                y = getattr(item, "year", None) or (item.get("publication_year") or item.get("year") if isinstance(item, dict) else None)
+                snip = getattr(item, "snippet", None) or (item.get("abstract_snippet") or item.get("snippet") if isinstance(item, dict) else "")
+                j_info = f" ({j}, {y})" if j and y else (f" ({j})" if j else (f" ({y})" if y else ""))
+                academic_lines.append(f"[{r_id}] {t}{j_info}\n    Temuan/Abstrak: {snip}")
+            context_parts.append("--- KONTEKS LITERATUR ILMIAH & WEB TERVERIFIKASI ---\n" + "\n\n".join(academic_lines))
+
         if context_parts:
             full_context = "\n\n".join(context_parts)
             user_prompt = f"KONTEKS RUJUKAN:\n{full_context}\n\nPERTANYAAN PENGGUNA:\n{question}"
@@ -1434,7 +1494,7 @@ class AssistantAiService:
             },
             "contents": contents_payload,
             "generationConfig": {
-                "temperature": 0.75 if (not relevant_pages and not doc_attachments) else 0.4,
+                "temperature": 0.75 if (not relevant_pages and not doc_attachments and not academic_evidence) else 0.4,
                 "maxOutputTokens": 3500
             }
         }
@@ -1456,7 +1516,7 @@ class AssistantAiService:
             )
 
             try:
-                with urllib.request.urlopen(req, timeout=15) as resp:
+                with urllib.request.urlopen(req, timeout=45) as resp:
                     res_body = resp.read().decode("utf-8")
                     gemini_res = json.loads(res_body)
 
@@ -1468,7 +1528,7 @@ class AssistantAiService:
                     raise RuntimeError("Gemini API mengembalikan bagian konten kosong.")
                 raw_text = parts[0].get("text", "")
                 data = self._safe_parse_json(raw_text)
-                return self._build_chat_response(data, relevant_pages)
+                return self._build_chat_response(data, relevant_pages, academic_evidence)
 
             except urllib.error.HTTPError as err:
                 if err.code in (429, 403):
@@ -1486,7 +1546,8 @@ class AssistantAiService:
         user_docs: List[Dict[str, Any]],
         chat_history: Optional[List[Dict[str, Any]]] = None,
         doc_attachments: Optional[List[Dict[str, Any]]] = None,
-        focused_document_title: Optional[str] = None
+        focused_document_title: Optional[str] = None,
+        academic_evidence: Optional[List[Any]] = None
     ) -> ChatResponse:
         """Memanggil Groq LPU dengan multi-turn chat history dan dokumen lampiran."""
         context_parts = []
@@ -1508,6 +1569,18 @@ class AssistantAiService:
                 f"Di akhir penjelasan, sampaikan catatan objektif bahwa topik ini merupakan penjelasan konseptual tambahan di luar materi spesifik modul '{focused_document_title}'."
             )
 
+        if academic_evidence:
+            academic_lines = []
+            for idx, item in enumerate(academic_evidence, 1):
+                r_id = getattr(item, "result_id", idx) if hasattr(item, "result_id") else (item.get("result_id", idx) if isinstance(item, dict) else idx)
+                t = getattr(item, "title", None) or (item.get("document_title") or item.get("title") if isinstance(item, dict) else "Publikasi Ilmiah")
+                j = getattr(item, "journal", None) or (item.get("journal_name") or item.get("journal") if isinstance(item, dict) else None)
+                y = getattr(item, "year", None) or (item.get("publication_year") or item.get("year") if isinstance(item, dict) else None)
+                snip = getattr(item, "snippet", None) or (item.get("abstract_snippet") or item.get("snippet") if isinstance(item, dict) else "")
+                j_info = f" ({j}, {y})" if j and y else (f" ({j})" if j else (f" ({y})" if y else ""))
+                academic_lines.append(f"[{r_id}] {t}{j_info}\n    Temuan/Abstrak: {snip}")
+            context_parts.append("--- KONTEKS LITERATUR ILMIAH & WEB TERVERIFIKASI ---\n" + "\n\n".join(academic_lines))
+
         if context_parts:
             full_context = "\n\n".join(context_parts)
             user_prompt = f"KONTEKS RUJUKAN:\n{full_context}\n\nPERTANYAAN PENGGUNA:\n{question}"
@@ -1527,11 +1600,12 @@ class AssistantAiService:
         chat_completion = self.groq_client.chat.completions.create(
             messages=messages,
             model=self.groq_model,
-            temperature=0.75 if (not relevant_pages and not doc_attachments) else 0.4,
-            max_tokens=3000
+            temperature=0.75 if (not relevant_pages and not doc_attachments and not academic_evidence) else 0.4,
+            max_tokens=3000,
+            timeout=45.0
         )
         data = self._safe_parse_json(chat_completion.choices[0].message.content)
-        return self._build_chat_response(data, relevant_pages)
+        return self._build_chat_response(data, relevant_pages, academic_evidence)
 
     def _format_context(self, relevant_pages: List[Dict[str, Any]], user_docs: List[Dict[str, Any]]) -> str:
         """Menyusun teks konteks untuk disuntikkan ke prompt LLM."""
@@ -1605,7 +1679,12 @@ class AssistantAiService:
         # Return format hybrid: prose sebagai answer, citations dari tag
         return {"answer": prose_text, "citations": citations}
 
-    def _build_chat_response(self, data: Dict[str, Any], relevant_pages: List[Dict[str, Any]]) -> ChatResponse:
+    def _build_chat_response(
+        self,
+        data: Dict[str, Any],
+        relevant_pages: List[Dict[str, Any]],
+        academic_evidence: Optional[List[Any]] = None
+    ) -> ChatResponse:
         citations = []
         raw_cits = data.get("citations", [])
         if isinstance(raw_cits, list) and relevant_pages:
@@ -1640,20 +1719,52 @@ class AssistantAiService:
                     is_verbatim=is_verified
                 ))
 
+        # Jika ada academic_evidence, tambahkan sitasi akademik yang valid
+        if academic_evidence:
+            for idx, item in enumerate(academic_evidence, 1):
+                r_id = getattr(item, "result_id", idx) if hasattr(item, "result_id") else (item.get("result_id", idx) if isinstance(item, dict) else idx)
+                t = getattr(item, "title", None) or (item.get("document_title") or item.get("title") if isinstance(item, dict) else "Publikasi Ilmiah")
+                j = getattr(item, "journal", None) or (item.get("journal_name") or item.get("journal") if isinstance(item, dict) else None)
+                y = getattr(item, "year", None) or (item.get("publication_year") or item.get("year") if isinstance(item, dict) else None)
+                snip = getattr(item, "snippet", None) or (item.get("abstract_snippet") or item.get("snippet") if isinstance(item, dict) else "")
+                doi = getattr(item, "doi", None) or (item.get("doi") if isinstance(item, dict) else None)
+                url = getattr(item, "url", None) or (item.get("url") if isinstance(item, dict) else None)
+                pdf_url = getattr(item, "pdf_url", None) or (item.get("pdf_url") if isinstance(item, dict) else None)
+                authors = getattr(item, "authors", None) or (item.get("authors", []) if isinstance(item, dict) else [])
+                evidence_lvl = getattr(item, "evidence_level", None) or (item.get("evidence_level") if isinstance(item, dict) else None)
+                stype = getattr(item, "source_type", None) or (item.get("source_type", "journal") if isinstance(item, dict) else "journal")
+
+                citations.append(CitationItem(
+                    document_id=f"academic-{r_id}",
+                    document_title=t,
+                    page_number=1,
+                    exact_quote=snip[:160] if snip else "",
+                    source_type=stype if stype in ("journal", "label", "web", "document") else "academic_web",
+                    journal_name=j,
+                    publication_year=str(y) if y else None,
+                    authors=authors,
+                    doi=doi,
+                    url=url,
+                    pdf_url=pdf_url,
+                    abstract_snippet=snip or None,
+                    evidence_level=evidence_lvl
+                ))
+
         raw_ans = data.get("answer") or ""
         answer_text = raw_ans.strip() if isinstance(raw_ans, str) else str(raw_ans).strip()
         if not answer_text:
             answer_text = "Penjelasan berhasil disusun."
 
-        # Anti-fabrikasi sitasi: jika tidak ada relevant_pages, sitasi wajib kosong
-        if not relevant_pages:
+        # Anti-fabrikasi sitasi: jika tidak ada sumber apa pun (relevant_pages maupun academic_evidence), sitasi wajib kosong
+        if not relevant_pages and not academic_evidence:
             citations = []
         elif citations and not any(f"[{i+1}]" in answer_text for i in range(len(citations))):
-            citations = []
+            # Jika LLM tidak menyertakan kurung siku rujukan apa pun di teks
+            pass
 
         # P3A Kebijakan Bertingkat:
-        # Jika tidak ada konteks dokumen relevan, tambahkan catatan kecil di akhir jika belum ada
-        if not relevant_pages:
+        # Jika tidak ada konteks dokumen MyLibrary dan bukan pertanyaan akademik ber-evidence, tambahkan catatan kecil
+        if not relevant_pages and not academic_evidence:
             if "tidak ditemukan di dokumenmu" not in answer_text.lower():
                 answer_text = f"{answer_text}\n\n*(Tidak ditemukan di dokumenmu.)*"
 
@@ -1672,146 +1783,21 @@ class AssistantAiService:
         image_attachments: Optional[List[Dict[str, Any]]] = None,
         focused_document_title: Optional[str] = None
     ) -> ChatResponse:
-        """Sintesis deterministik lokal berkarakter Claudia ketika model eksternal offline."""
-        # 1. Jika pengguna melampirkan berkas dokumen
-        if doc_attachments:
-            first_doc = doc_attachments[0]
-            fname = first_doc.get("filename", "Dokumen Lampiran")
-            raw_text = first_doc.get("extracted_text", "")
-            lines = [l.strip() for l in raw_text.split("\n") if len(l.strip()) > 15][:6]
-            bullet_points = "\n- ".join(lines) if lines else "Teks dokumen berhasil dibaca dan dianalisis."
-            return ChatResponse(
-                answer=(
-                    f"Telah memeriksa berkas lampiran **{fname}**.\n\n"
-                    f"**Ringkasan Teks Lampiran:**\n- {bullet_points}\n\n"
-                    f"Berdasarkan materi yang dilampirkan, sistem telah mengekstrak konten tersebut untuk menjawab: *\"{question}\"*."
-                ),
-                citations=[]
-            )
-
-        # 2. Jika pengguna melampirkan gambar
-        if image_attachments:
-            img_names = ", ".join([img.get("filename", "Gambar") for img in image_attachments])
-            return ChatResponse(
-                answer=(
-                    f"Lampiran gambar **{img_names}** telah diterima dan diproses.\n\n"
-                    "Untuk analisis multimodal visual lengkap dengan pengenalan kurva, teks, dan struktur sediaan farmasi, pastikan Gemini API Key aktif di pengaturan sistem."
-                ),
-                citations=[]
-            )
-
-        # 3. Tangani pertanyaan percakapan, identitas, atau jika tidak ada dokumen spesifik yang cocok
-        if not user_docs and not is_conversational and not doc_attachments and not image_attachments:
-            reasoned_answer = self._reason_open_domain_answer(question, user_docs)
-            return self._build_chat_response({"answer": reasoned_answer, "citations": []}, [])
-
-        # Item 5 Anti-Halusinasi Bertingkat (P3A):
-        # Jika tidak ada halaman dokumen yang cocok, jawab dengan penalaran terbuka berkualitas
-        if not relevant_pages and not is_conversational:
-            reasoned_answer = self._reason_open_domain_answer(question, user_docs)
-            return self._build_chat_response({"answer": reasoned_answer, "citations": []}, [])
-
-        if is_conversational:
-            reasoned_answer = self._reason_open_domain_answer(question, user_docs)
-            return self._build_chat_response({"answer": reasoned_answer, "citations": []}, [])
-
-        top_page = relevant_pages[0]
-        text = top_page.get("text", "")
-        doc_title = top_page.get("document_title", "Dokumen")
-        page_num = top_page.get("page_number", 1)
-        q_lower = question.lower()
-
-        # Cek apakah pengguna meminta gambar / visual
-        is_visual = any(w in q_lower for w in ["gambar", "diagram", "grafik", "kurva", "bagan", "tabel", "skema", "figure", "plot", "foto"])
-
-        # Bersihkan baris teks halaman dari noise
-        clean_lines = [l.strip() for l in text.split("\n") if l.strip() and not l.strip().isdigit()]
-        meaningful_lines = [l for l in clean_lines if len(l) > 10 and not l.lower().startswith("halaman") and not l.lower().startswith("page")]
-        exact_quote = meaningful_lines[0] if meaningful_lines else (clean_lines[0] if clean_lines else text[:120])
-
-        # Kumpulkan seluruh teks relevan dari pages yang ditemukan untuk sintesis menyeluruh
-        collected_insights = []
-        for p in relevant_pages[:4]:
-            p_text = p.get("text", "")
-            p_lines = [l.strip() for l in p_text.split("\n") if len(l.strip()) > 15 and not l.strip().isdigit()]
-            for pl in p_lines[:5]:
-                if pl not in collected_insights:
-                    collected_insights.append(pl)
-
-        # Bangun sintesis terstruktur akademis
-        # 1. Deteksi domain materi khusus (Komputasi Numerik, Metode Titik Tetap, Newton Raphson, dll.)
-        is_fixed_point_page = any("titik" in l.lower() or "g(x)" in l.lower() or "iterasi" in l.lower() or "akar" in l.lower() for l in meaningful_lines)
-        
-        if is_fixed_point_page and any(k in q_lower for k in ["titik", "fixed", "iterasi", "metode", "akar", "bagaimana", "caranya"]):
-            answer_text = (
-                f"Berdasarkan materi literatur **{doc_title}** (Halaman {page_num}) [1]:\n\n"
-                f"### 1. Definisi & Konsep Fundamental\n"
-                f"**Metode Iterasi Satu Titik (Fixed Point Iteration)** adalah metode komputasi numerik golongan *metode terbuka* untuk menentukan akar persamaan non-linier $f(x) = 0$. "
-                f"Prinsip intinya adalah memanipulasi bentuk persamaan secara aljabar menjadi relasi rekursif titik tetap:\n\n"
-                f"$$x = g(x)$$\n\n"
-                f"Nilai tebakan awal $x_0$ digunakan untuk menghasilkan barisan hampiran solusi melalui persamaan iterasi:\n\n"
-                f"$$x_{{i+1}} = g(x_i)$$\n\n"
-                f"### 2. Syarat Mutlak Konvergensi\n"
-                f"Bentuk $g(x)$ tidak bersifat tunggal. Agar proses iterasi bergerak konvergen mendekati akar sejati (bukan divergen atau menjauhi solusi), fungsi $g(x)$ wajib memenuhi kriteria turunan pertama:\n\n"
-                f"$$|g'(x)| < 1$$\n\n"
-                f"pada interval di sekitar akar yang dicari.\n\n"
-                f"### 3. Langkah Operasional Algoritma\n"
-                f"1. **Formulasi Ulang**: Ubah $f(x) = 0$ menjadi bentuk $x = g(x)$ yang memenuhi $|g'(x)| < 1$.\n"
-                f"2. **Inisialisasi**: Tetapkan satu nilai tebakan awal $x_0$ serta batas toleransi galat $\\epsilon$ (misalnya $|f(x)| < 10^{{-3}}$).\n"
-                f"3. **Iterasi Rekursif**: Hitung $x_{{i+1}} = g(x_i)$ secara bertahap.\n"
-                f"4. **Kriteria Berhenti**: Hentikan iterasi jika $|x_{{i+1}} - x_i| < \\epsilon$ atau $|f(x_{{i+1}})| < \\epsilon$.\n\n"
-                f"### 4. Contoh Komputasi Nyata\n"
-                f"Diberikan persamaan $f(x) = x^2 - 2x - 3 = 0$.\n"
-                f"- Ditransformasikan menjadi $x = \\sqrt{{2x + 3}} = g(x)$.\n"
-                f"- Turunannya: $g'(x) = \\frac{{1}}{{\\sqrt{{2x + 3}}}}$. Untuk tebakan awal $x_0 = 4$, $|g'(4)| = \\frac{{1}}{{\\sqrt{{11}}}} \\approx 0.3015 < 1$ (terbukti konvergen).\n"
-                f"- Iterasi 1: $x_1 = \\sqrt{{2(4) + 3}} = \\sqrt{{11}} \\approx 3.3166$\n"
-                f"- Iterasi 2: $x_2 = \\sqrt{{2(3.3166) + 3}} = \\sqrt{{9.6332}} \\approx 3.1037$\n"
-                f"- Barisan iterasi akan berkonvergensi ke akar sejati $x^* = 3$."
-            )
-        else:
-            # Sintesis terstruktur umum berbasis teks naskah
-            points_formatted = "\n".join([f"- {item}" for item in collected_insights[:5]])
-            answer_text = (
-                f"Berdasarkan rujukan literatur **{doc_title}** (Halaman {page_num}) [1]:\n\n"
-                f"### 1. Poin Intisari Materi\n"
-                f"{points_formatted}\n\n"
-                f"### 2. Elaborasi Konseptual\n"
-                f"> {exact_quote}\n\n"
-                f"Prinsip ini menjabarkan konsep secara sistematis sesuai pembahasan kurikulum pada lembar modul. "
-                f"Kutipan dan diagram lengkap dapat Anda periksa langsung pada lembar fisik dokumen di panel sebelah kanan [1]."
-            )
-
-        if is_visual:
-            answer_text += (
-                f"\n\n*Catatan Visual: Potongan diagram, kurva, atau tabel yang terlampir pada lembar dokumen ini "
-                f"disajikan di bawah respons untuk mempermudah telaah visual.*"
-            )
-
-        citations_list = [
-            CitationItem(
-                document_id=top_page.get("document_id"),
-                document_title=doc_title,
-                page_number=page_num,
-                exact_quote=exact_quote
-            )
-        ]
-
-        # Tambahkan sitasi kedua jika ada halaman pendukung lain yang relevan
-        if len(relevant_pages) > 1 and relevant_pages[1].get("page_number") != page_num:
-            p2 = relevant_pages[1]
-            p2_lines = [l.strip() for l in p2.get("text", "").split("\n") if len(l.strip()) > 10]
-            citations_list.append(
-                CitationItem(
-                    document_id=p2.get("document_id"),
-                    document_title=p2.get("document_title", doc_title),
-                    page_number=p2.get("page_number", page_num + 1),
-                    exact_quote=p2_lines[0] if p2_lines else "Materi pendukung lanjutan pada lembar dokumen."
-                )
-            )
+        """Ketika semua LLM eksternal offline, kembalikan pesan status jujur tanpa memalsukan konten."""
+        citations = []
+        if relevant_pages:
+            for idx, p in enumerate(relevant_pages, 1):
+                citations.append(CitationItem(
+                    document_id=p.get("document_id", f"doc-{idx}"),
+                    document_title=p.get("document_title", "Dokumen Referensi"),
+                    page_number=p.get("page_number", 1),
+                    exact_quote=""
+                ))
 
         return ChatResponse(
-            answer=answer_text,
-            citations=citations_list
+            answer="AI sedang tidak tersambung, coba lagi",
+            citations=citations,
+            is_error=True
         )
 
     def _reason_open_domain_answer(self, question: str, user_docs: List[Dict[str, Any]]) -> str:
@@ -2077,354 +2063,14 @@ class AssistantAiService:
         chat_history: Optional[List[Dict[str, Any]]] = None,
         model_preference: Optional[str] = None
     ) -> ChatResponse:
-        """
-        Sintesis jawaban ilmiah berbasis bukti empiris (Evidence-Based Medicine) ala Perplexity & Claude.
-        Mengaitkan setiap temuan studi dengan nomor sitasi [1], [2] yang kaya metadata jurnal internasional.
-        """
-        if not academic_evidence:
-            return ChatResponse(
-                answer=(
-                    "### ⚠️ Tidak Ditemukan Literatur Terkait di Repositori Ilmiah\n\n"
-                    f"Pencarian terhadap topik *\"{question}\"* tidak menemukan naskah jurnal spesifik di basis data PubMed, PMC, maupun repositori akademik.\n\n"
-                    "**Saran Penelusuran Ilmiah:**\n"
-                    "- Gunakan nama generik obat resmi (misal: *Amlodipine*, *Metformin*, *Ibuprofen*).\n"
-                    "- Gunakan istilah farmakologi atau nama penyakit standar (misal: *hipertensi*, *diabetes melitus tipe 2*, *preeklampsia*).\n"
-                    "- Atau beralih ke mode **Library** jika Anda memiliki dokumen/modul farmasi sendiri di koleksi MyLibrary."
-                ),
-                citations=[]
-            )
-
-        def _get_item_val(it: Any, *keys: str, default: Any = None) -> Any:
-            for k in keys:
-                if hasattr(it, k):
-                    val = getattr(it, k)
-                    if val is not None:
-                        return val
-                elif isinstance(it, dict) and k in it:
-                    val = it.get(k)
-                    if val is not None:
-                        return val
-            return default
-
-        # Susun daftar sitasi dengan metadata asli tanpa fabrikasi
-        citations: List[CitationItem] = []
-        context_parts = []
-        valid_ids = set()
-
-        for idx, item in enumerate(academic_evidence, 1):
-            result_num = _get_item_val(item, "result_id", default=idx)
-            valid_ids.add(str(result_num))
-            title = _get_item_val(item, "title", "document_title", default="Publikasi Ilmiah")
-            journal = _get_item_val(item, "journal", "journal_name", default=None)
-            year = _get_item_val(item, "year", "publication_year", default=None)
-            authors = _get_item_val(item, "authors", default=[])
-            authors_str = ", ".join(authors[:2]) + (" et al." if len(authors) > 2 else "") if authors else ""
-            abstract = _get_item_val(item, "snippet", "abstract_snippet", "full_text", default="")
-            doi = _get_item_val(item, "doi", default=None)
-            url = _get_item_val(item, "url", default=None)
-            pdf_url = _get_item_val(item, "pdf_url", default=None)
-            evidence_level = _get_item_val(item, "evidence_level", default=None)
-            source_type = _get_item_val(item, "source_type", default="journal")
-
-            first_quote = abstract[:160].strip() if abstract else ""
-
-            citations.append(
-                CitationItem(
-                    document_id=f"academic-{result_num}",
-                    document_title=title,
-                    page_number=1,
-                    exact_quote=first_quote,
-                    source_type=source_type if source_type in ("journal", "label", "web", "document") else "academic_web",
-                    journal_name=journal,
-                    publication_year=str(year) if year else None,
-                    authors=authors,
-                    doi=doi,
-                    url=url,
-                    pdf_url=pdf_url,
-                    abstract_snippet=abstract or None,
-                    evidence_level=evidence_level
-                )
-            )
-
-            journal_desc = journal or "Jurnal/Basis Data Ilmiah"
-            if year:
-                journal_desc += f" ({year})"
-            penulis_desc = f" | PENULIS: {authors_str}" if authors_str else ""
-            doi_desc = f"{doi}" if doi else "-"
-            url_desc = f"({url})" if url else ""
-            ev_desc = f" [Bukti: {evidence_level}]" if evidence_level else ""
-            abstrak_desc = abstract if abstract else "(Tidak ada abstrak tersedia)"
-
-            context_parts.append(
-                f"[{result_num}] JUDUL ARTIKEL: {title}\n"
-                f"    SUMBER/JURNAL: {journal_desc}{penulis_desc}{ev_desc}\n"
-                f"    DOI / TAUTAN RESMI: {doi_desc} {url_desc}\n"
-                f"    ABSTRAK & TEMUAN EMPIRIS: {abstrak_desc}\n"
-            )
-
-        context_str = "\n".join(context_parts)
-
-        # Validasi sitasi: Setiap [n] di teks harus punya sumber yang valid
-        def _sanitize_answer(raw_ans: str) -> str:
-            if not raw_ans:
-                return raw_ans
-            def _repl(match):
-                num = match.group(1)
-                return match.group(0) if num in valid_ids else ""
-            cleaned = re.sub(r'\[(\d+)\](?!\()', _repl, raw_ans)
-            return re.sub(r' +', ' ', cleaned).strip()
-
-        # Prompt Evidence-Based Medicine ala Claude & Perplexity Academic
-        academic_prompt = (
-            "KONTEKS LITERATUR ILMIAH & WEB TERVERIFIKASI:\n"
-            f"{context_str}\n\n"
-            f"PERTANYAAN PENGGUNA / PENELITI:\n{question}\n\n"
-            "PETUNJUK SINTESIS EVIDENCE-BASED MEDICINE ALA CLAUDE:\n"
-            "1. Pembukaan (Inverted Pyramid): Jawab langsung esensi pertanyaan secara tegas dan mendalam pada kalimat pertama berdasarkan konsensus literatur, sertakan sitasi [1], [2]. Dilarang salam pembuka robotik atau mengulang teks pertanyaan pengguna.\n"
-            "2. Pembahasan Berbasis Bukti & Mekanisme: Uraikan mekanisme molekuler, efektivitas klinis, atau temuan studi secara analitis. Rujuk nama jurnal, badan resmi, atau penulis naskah (contoh: 'Dalam publikasi di Journal of Clinical Hypertension [1]...').\n"
-            "3. Profil Keamanan & Implikasi Praktis: Sebutkan efek samping spesifik, kontraindikasi, atau anjuran dosis/klinis yang relevan dari bukti literatur.\n"
-            "4. Wajib Sitasi Faktual [n]: Setiap klaim fakta, data kuantitatif, atau temuan studi WAJIB disitasi dengan nomor kurung siku [1], [2] yang merujuk strictly pada nomor daftar literatur di atas. DILARANG KERAS mengarang sumber atau nomor sitasi di luar daftar.\n"
-            "5. Notasi LaTeX Presisi: Gunakan $...$ untuk simbol/rumus inline ($t_{1/2}$, $C_{max}$, $AUC$, dosis) dan $$...$$ untuk persamaan reaksi/matematika."
-        )
-
-        academic_system = (
-            "Anda adalah EPIONA Academic Research Assistant, spesialis sintesis Evidence-Based Medicine dan telaah literatur biomedis farmasi terverifikasi. "
-            "Anda beroperasi dengan prinsip Inverted Pyramid, presisi analitis mutlak, dan grounding 1:1 ke literatur ilmiah."
-        )
-
-
-        # 0. Routing Preferensi Model Pilihan Pengguna (Claude vs Gemini)
-        pref = (model_preference or "").lower()
-        prefer_claude = "claude" in pref or "sonnet" in pref or "anthropic" in pref
-
-        if prefer_claude:
-            if not self.anthropic_api_key and not self.openrouter_api_key:
-                notice_text = (
-                    "### ⚠️ Kunci API Claude Belum Dikonfigurasi di Backend\n\n"
-                    "Anda memilih model **Claude 3.5 Sonnet (Latest)** untuk riset akademik, namun `ANTHROPIC_API_KEY` maupun `OPENROUTER_API_KEY` "
-                    "belum diisi pada berkas konfigurasi `backend/.env`.\n\n"
-                    "**Langkah Aktivasi:**\n"
-                    "1. Masukkan API key Claude ke `backend/.env`:\n"
-                    "   ```env\n"
-                    "   OPENROUTER_API_KEY=sk-or-v1-...\n"
-                    "   # ATAU\n"
-                    "   ANTHROPIC_API_KEY=sk-ant-...\n"
-                    "   ```\n"
-                    "2. Muat ulang server, atau alihkan model ke **Gemini 2.0 Flash (Default)** di samping tombol Kirim untuk menikmati respon instan gratis."
-                )
-                return ChatResponse(answer=notice_text, citations=citations, is_error=True)
-
-            if self.anthropic_api_key:
-                try:
-                    payload = {
-                        "model": self.anthropic_model,
-                        "max_tokens": 3000,
-                        "system": academic_system,
-                        "messages": [{"role": "user", "content": academic_prompt}],
-                        "temperature": 0.2
-                    }
-                    req = urllib.request.Request(
-                        f"{self.anthropic_base_url}/v1/messages",
-                        data=json.dumps(payload).encode("utf-8"),
-                        headers={
-                            "x-api-key": self.anthropic_api_key,
-                            "anthropic-version": "2023-06-01",
-                            "content-type": "application/json"
-                        },
-                        method="POST"
-                    )
-                    with urllib.request.urlopen(req, timeout=20) as resp:
-                        res_data = json.loads(resp.read().decode("utf-8"))
-                    ai_answer = res_data["content"][0]["text"]
-                    return ChatResponse(answer=ai_answer, citations=citations)
-                except Exception as e:
-                    logger.warning(f"Preferred Anthropic Academic error: {e}.")
-
-            if self.openrouter_api_key:
-                claude_target = self.openrouter_model if "claude" in self.openrouter_model.lower() else "anthropic/claude-sonnet-5.5"
-                try:
-                    payload = {
-                        "model": claude_target,
-                        "messages": [
-                            {"role": "system", "content": academic_system},
-                            {"role": "user", "content": academic_prompt}
-                        ],
-                        "temperature": 0.2,
-                        "max_tokens": 3000
-                    }
-                    req = urllib.request.Request(
-                        f"{self.openrouter_base_url}/chat/completions",
-                        data=json.dumps(payload).encode("utf-8"),
-                        headers={
-                            "Content-Type": "application/json",
-                            "Authorization": f"Bearer {self.openrouter_api_key}",
-                            "HTTP-Referer": "https://epiona.academic.id",
-                            "X-Title": "EPIONA Academic Research Assistant"
-                        },
-                        method="POST"
-                    )
-                    with urllib.request.urlopen(req, timeout=25) as resp:
-                        raw_text = resp.read().decode("utf-8")
-                    ai_answer = self._extract_text_from_raw_openai(raw_text)
-                    return ChatResponse(answer=_sanitize_answer(ai_answer), citations=citations)
-                except Exception as e:
-                    logger.warning(f"Preferred OpenRouter Academic error: {e}.")
-
-            return ChatResponse(
-                answer="### ⚠️ Gagal Menghubungi Penyedia Claude\n\nKoneksi ke API Claude gagal atau saldo kuota API habis. Silakan beralih ke model Gemini 2.0 Flash di samping tombol Kirim.",
-                citations=citations,
-                is_error=True
-            )
-
-        # 1. Prioritas Utama: 9Router AI Gateway (Cepat & Andal)
-        if self._is_router_alive():
-            # Coba model router aktif dan alternatif yang stabil
-            models_to_try = [self.router_model, "gemini/gemini-3.7-flash", "gemini/gemini-3.6-flash", "gemini/gemini-3.5-flash-lite"]
-            seen_academic = set()
-            unique_academic = []
-            for m in models_to_try:
-                if m and m not in seen_academic:
-                    seen_academic.add(m)
-                    unique_academic.append(m)
-
-            for m_candidate in unique_academic:
-                try:
-                    payload = {
-                        "model": m_candidate,
-                        "messages": [
-                            {"role": "system", "content": academic_system},
-                            {"role": "user", "content": academic_prompt}
-                        ],
-                        "temperature": 0.2,
-                        "max_tokens": 2500
-                    }
-                    req = urllib.request.Request(
-                        f"{self.router_base_url}/chat/completions",
-                        data=json.dumps(payload).encode("utf-8"),
-                        headers={"Content-Type": "application/json", "Authorization": f"Bearer {self.router_api_key}"},
-                        method="POST"
-                    )
-                    with urllib.request.urlopen(req, timeout=15) as resp:
-                        raw_text = resp.read().decode("utf-8")
-                    ai_answer = self._extract_text_from_raw_openai(raw_text)
-                    if ai_answer and len(ai_answer.strip()) > 30:
-                        return ChatResponse(answer=_sanitize_answer(ai_answer), citations=citations)
-                except Exception as e:
-                    logger.warning(f"9Router Academic ({m_candidate}) error: {e}. Mencoba alternatif.")
-
-        # 2. Prioritas 2: OpenRouter AI Gateway
-        if self.openrouter_api_key:
-            try:
-                payload = {
-                    "model": self.openrouter_model,
-                    "messages": [
-                        {"role": "system", "content": academic_system},
-                        {"role": "user", "content": academic_prompt}
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 3000
-                }
-                req = urllib.request.Request(
-                    f"{self.openrouter_base_url}/chat/completions",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={
-                        "Content-Type": "application/json",
-                        "Authorization": f"Bearer {self.openrouter_api_key}",
-                        "HTTP-Referer": "https://epiona.academic.id",
-                        "X-Title": "EPIONA Academic Research Assistant"
-                    },
-                    method="POST"
-                )
-                with urllib.request.urlopen(req, timeout=20) as resp:
-                    raw_text = resp.read().decode("utf-8")
-                ai_answer = self._extract_text_from_raw_openai(raw_text)
-                if ai_answer and len(ai_answer.strip()) > 30:
-                    return ChatResponse(answer=_sanitize_answer(ai_answer), citations=citations)
-            except Exception as e:
-                logger.warning(f"OpenRouter Academic error: {e}. Mengalihkan ke provider berikutnya.")
-
-        # 3. Prioritas 3: Groq LPU
-        if self.groq_client:
-            try:
-                comp = self.groq_client.chat.completions.create(
-                    model=self.groq_model or "llama-3.3-70b-versatile",
-                    messages=[
-                        {"role": "system", "content": academic_system},
-                        {"role": "user", "content": academic_prompt}
-                    ],
-                    temperature=0.2,
-                    max_tokens=2500
-                )
-                ai_answer = comp.choices[0].message.content
-                if ai_answer and len(ai_answer.strip()) > 30:
-                    return ChatResponse(answer=_sanitize_answer(ai_answer), citations=citations)
-            except Exception as e:
-                logger.warning(f"Groq Academic error: {e}. Mengalihkan ke Smart Offline Synthesis.")
-
-        # 4. Fallback Cerdas Dinamis: Sintesis Aktual Abstrak Jurnal (Perplexity-Grade)
-        return self._synthesize_academic_offline(question, academic_evidence, citations)
-
-    def _synthesize_academic_offline(
-        self,
-        question: str,
-        academic_evidence: List[Any],
-        citations: List[CitationItem]
-    ) -> ChatResponse:
-        """
-        Sintesis akademik mendalam berbasis bukti empiris naskah riil (PubMed / PMC / arXiv / openFDA).
-        Menghasilkan telaah komprehensif berbasis bukti aktual dari abstrak publikasi.
-        """
-        def _get(it: Any, *keys: str, default: Any = "") -> Any:
-            for k in keys:
-                if hasattr(it, k):
-                    val = getattr(it, k)
-                    if val is not None:
-                        return val
-                elif isinstance(it, dict) and k in it:
-                    val = it.get(k)
-                    if val is not None:
-                        return val
-            return default
-
-        total_sources = len(academic_evidence)
-        first_paper = academic_evidence[0]
-        fp_id = _get(first_paper, "result_id", default=1)
-        fp_title = _get(first_paper, "title", "document_title", default="Studi Terakreditasi")
-        fp_journal = _get(first_paper, "journal", "journal_name", default="PubMed")
-        fp_year = _get(first_paper, "year", "publication_year", default="")
-        fp_year_str = f" ({fp_year})" if fp_year else ""
-        fp_abs = str(_get(first_paper, "snippet", "abstract_snippet", default="")).strip()
-
-        body = [
-            f"Berdasarkan konsensus dari **{total_sources} publikasi ilmiah terverifikasi** mengenai *\"{question}\"*, telaah literatur menunjukkan temuan empiris sebagai berikut [{fp_id}]:\n",
-            "### 1. Konsensus Ilmiah & Temuan Kunci",
-            f"Publikasi utama dalam *{fp_journal}*{fp_year_str} berjudul *\"{fp_title}\"* [{fp_id}] mengonfirmasi:",
-            f"> {fp_abs if fp_abs else 'Data klinis mendukung peran penting intervensi farmakoterapi terkait dalam modulasi respon biologis pasien.'}\n",
-            "### 2. Matriks Bukti Literatur Terverifikasi",
-            "| Sitasi | Judul Publikasi & Jurnal | Tahun | Temuan Empiris Utama / Abstrak |",
-            "| :--- | :--- | :---: | :--- |"
-        ]
-
-        for idx, item in enumerate(academic_evidence, 1):
-            r_id = _get(item, "result_id", default=idx)
-            t = _get(item, "title", "document_title", default="Studi Klinis")
-            j = _get(item, "journal", "journal_name", default="Basis Data Ilmiah")
-            y = _get(item, "year", "publication_year", default="-")
-            ab = str(_get(item, "snippet", "abstract_snippet", default="")).strip()
-            ab_clean = " ".join(ab.split())[:160] + "..." if len(ab) > 160 else ab
-            if not ab_clean:
-                ab_clean = f"Kajian klinis terindeks dalam {j}."
-            body.append(f"| **[{r_id}]** | **{t}**<br>*{j}* | {y} | {ab_clean} |")
-
-        body.append(
-            "\n### 3. Evaluasi Klinis & Tindak Lanjut\n"
-            f"- **Konsistensi Data**: Temuan di atas merujuk langsung pada naskah yang terindeks resmi pada pangkalan data ilmiah [{fp_id}].\n"
-            "- **Verifikasi Rujukan**: Seluruh naskah lengkap, DOI, dan tautan publikasi asli dapat diakses langsung melalui kartu sumber rujukan."
-        )
-
-        return ChatResponse(
-            answer="\n".join(body),
-            citations=citations
+        """Sintesis jawaban ilmiah berbasis bukti empiris murni dari LLM."""
+        return self.answer_chat(
+            question=question,
+            user_docs=[],
+            relevant_pages=[],
+            chat_history=chat_history,
+            model_preference=model_preference,
+            academic_evidence=academic_evidence
         )
 
     def test_connection(

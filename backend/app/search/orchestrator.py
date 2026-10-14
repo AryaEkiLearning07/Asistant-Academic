@@ -61,7 +61,7 @@ class SearchOrchestrator:
     async def search(
         self,
         question: str,
-        mode: str = "academic",
+        mode: str = "auto",
         user_passages: Optional[List[Dict[str, Any]]] = None,
         force_refresh: bool = False
     ) -> List[SearchResult]:

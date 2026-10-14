@@ -77,7 +77,7 @@ class ChatAttachment(BaseModel):
 
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=8000, description="Pertanyaan pengguna (maksimal 8000 karakter)")
-    grounding_mode: Optional[str] = Field(default="library", description="Mode penelusuran: 'library' (lokal) atau 'academic' (PubMed/arXiv)")
+    grounding_mode: Optional[str] = Field(default="auto", description="Mode penelusuran: 'auto', 'library', 'academic', atau 'web'")
     model_preference: Optional[str] = Field(default="gemini-2.0-flash", description="Model AI yang dipilih: 'gemini-2.0-flash' atau 'claude-3-5-sonnet'")
     focused_document_id: Optional[str] = None
     session_id: Optional[str] = None

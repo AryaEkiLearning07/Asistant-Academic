@@ -1,7 +1,6 @@
 import React, { useRef, useEffect } from "react";
 import { Plus, Mic, MicOff, ArrowUp, Square, X } from "lucide-react";
 import { GroundingMode, ModelPreference, AttachedFileItem, UserProfile } from "@/types";
-import { ModeSegmented } from "./ModeSegmented";
 import { ModelSelect } from "./ModelSelect";
 import { FileFormatIcon } from "../library/FileFormatIcon";
 
@@ -11,8 +10,8 @@ interface ComposerProps {
   isSending: boolean;
   onSend: (e?: React.FormEvent) => void;
   onStop?: () => void;
-  groundingMode: GroundingMode;
-  setGroundingMode: (m: GroundingMode) => void;
+  groundingMode?: GroundingMode;
+  setGroundingMode?: (m: GroundingMode) => void;
   modelPreference: ModelPreference;
   setModelPreference: (m: ModelPreference) => void;
   currentUser?: UserProfile | null;
@@ -103,12 +102,6 @@ export const Composer: React.FC<ComposerProps> = ({
     }
   };
 
-  const placeholders: Record<GroundingMode, string> = {
-    library: "Tanya dokumen MyLibrary…",
-    academic: "Cari jurnal PubMed/arXiv…",
-    web: "Cari di web…",
-  };
-
   const isCanSend = Boolean(inputQuestion.trim() || attachedFiles.length > 0);
   const isAdmin = currentUser?.role === "admin";
   const isPro = isAdmin || (currentUser?.tier && currentUser.tier !== "free");
@@ -158,7 +151,7 @@ export const Composer: React.FC<ComposerProps> = ({
           value={inputQuestion}
           onChange={(e) => setInputQuestion(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder={isRecording ? "Sedang mendengarkan ucapan Anda…" : placeholders[groundingMode]}
+          placeholder={isRecording ? "Sedang mendengarkan ucapan Anda…" : "Tanyakan tentang dokumen, riset farmasi, atau topik kesehatan…"}
           disabled={isSending}
           rows={1}
           className="w-full px-4 pt-3 pb-2 text-[14px] leading-[1.5] bg-transparent text-text placeholder:text-text-muted outline-none resize-none min-h-[56px] max-h-[240px]"
@@ -204,14 +197,8 @@ export const Composer: React.FC<ComposerProps> = ({
             )}
           </div>
 
-          {/* Kanan: [Mode segmented][Model dropdown][Kirim 32x32] */}
+          {/* Kanan: [Model dropdown][Kirim 32x32] */}
           <div className="flex items-center gap-2">
-            <ModeSegmented
-              value={groundingMode}
-              onChange={setGroundingMode}
-              disabled={isSending}
-            />
-
             <ModelSelect
               modelPreference={modelPreference}
               onModelChange={setModelPreference}

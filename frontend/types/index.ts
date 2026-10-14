@@ -43,7 +43,7 @@ export interface SourceItem {
   document_id?: string;
 }
 
-export type GroundingMode = "library" | "academic" | "web";
+export type GroundingMode = "auto" | "library" | "academic" | "web";
 
 export interface FigureSnippet {
   document_id: string;

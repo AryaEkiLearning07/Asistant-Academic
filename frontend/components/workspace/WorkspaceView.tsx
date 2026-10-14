@@ -249,11 +249,13 @@ export const WorkspaceView: React.FC<WorkspaceViewProps> = ({
                 EPIONA Assistant
               </span>
               <span className="text-[11px] font-medium px-2 py-0.5 rounded-pill bg-surface-2 border border-border text-text-muted hidden sm:inline-block">
-                {groundingMode === "library"
+                {groundingMode === "auto"
+                  ? "Auto Research"
+                  : groundingMode === "library"
                   ? "MyLibrary"
                   : groundingMode === "academic"
-                  ? "Akademik (PubMed)"
-                  : "Web Umum"}
+                  ? "Akademik"
+                  : "Web"}
               </span>
             </div>
           </div>

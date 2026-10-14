@@ -76,7 +76,7 @@ export default function AppRoot() {
   const [sendingStatusText, setSendingStatusText] = useState<string>("EPIONA sedang membaca literatur...");
   const [isTypingStream, setIsTypingStream] = useState<boolean>(false);
   const [streamingMsgId, setStreamingMsgId] = useState<string | null>(null);
-  const [groundingMode, setGroundingMode] = useState<GroundingMode>("library");
+  const [groundingMode, setGroundingMode] = useState<GroundingMode>("auto");
   const [modelPreference, setModelPreference] = useState<ModelPreference>("gemini-2.0-flash");
   const [sidebarSearchQuery, setSidebarSearchQuery] = useState("");
   const [isSearchingSessions, setIsSearchingSessions] = useState(false);

@@ -53,7 +53,7 @@ from app.indexer import DocumentSearchIndex
 from app.ai_service import AssistantAiService
 from app.academic_service import AcademicRetrieverService
 from app.attachment_service import AttachmentProcessor
-from app.search import SearchOrchestrator, ClaimChecker, SearchResult
+from app.search import SearchOrchestrator, ClaimChecker, SearchResult, SearchRouter
 
 search_orchestrator = SearchOrchestrator()
 
@@ -617,6 +617,181 @@ def delete_user_document(
     return result
 
 # --- GROUNDED CHAT & ASSISTANT ---
+def route_chat_query(
+    question: str,
+    grounding_mode: str = "auto",
+    user_id: Optional[str] = None,
+    focused_doc_id: Optional[str] = None,
+    attachments: Optional[List[Dict[str, Any]]] = None
+) -> Dict[str, Any]:
+    """
+    Auto-routing cerdas dan terpadu:
+    1. Obrolan santai/sapaan -> tanpa search.
+    2. Dokumen MyLibrary -> selalu dicari (RAG hybrid) jika pengguna memiliki dokumen.
+    3. Pertanyaan fakta ilmiah/medis -> cari jurnal ilmiah & web (SearchOrchestrator parallel Tavily).
+    4. Mendukung backward-compatibility parameter grounding_mode ('auto', 'library', 'academic', 'web').
+    """
+    attachments = attachments or []
+    norm_q = DocumentSearchIndex.normalize_query(question).lower()
+    q_lower = question.strip().lower()
+
+    # Deteksi sapaan / obrolan santai
+    words_in_q = set(re.findall(r"\b\w+\b", q_lower))
+    short_greetings = {"halo", "hai", "hello", "hi", "ok", "oke", "sip", "mantap", "makasih", "thanks"}
+    has_short_greeting = bool(short_greetings.intersection(words_in_q))
+    conversational_phrases = [
+        "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
+        "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
+        "siapa yang membuat", "siapa membuat", "siapa pembuat",
+        "siapa pencipta", "siapa penciptamu", "siapa pembuatmu", "siapa developermu", "siapa pengembang",
+        "dibuat oleh siapa", "diciptakan oleh siapa", "siapa yang ciptakan",
+        "siapa yang bikin", "siapa bikin", "siapa yang buat", "siapa buat",
+        "pembuat kamu", "pencipta kamu", "perancang kamu",
+        "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
+        "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
+        "apa itu epiona", "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
+        "apa kabar", "terima kasih", "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
+        "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
+    ]
+    has_phrase = any(phrase in norm_q or phrase in q_lower for phrase in conversational_phrases)
+    is_creator_query = any(w in norm_q or w in q_lower for w in [
+        "menciptakan", "menciptkaan", "ciptakan", "pencipta", "pembuat", "pengembang", "develop"
+    ]) and any(p in norm_q or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
+
+    is_conversational = (
+        (has_short_greeting or has_phrase or is_creator_query or not SearchRouter.needs_search(question))
+        and not attachments
+    )
+
+    meta_keywords = [
+        "berapa file", "berapa dokumen", "ada berapa", "apa saja file", "apa saja dokumen",
+        "tentang apa aja", "tentang apa saja", "isi library", "isi perpustakaan",
+        "dalam library", "di library", "dokumen apa", "file apa", "daftar dokumen",
+        "daftar file", "list dokumen", "koleksi saya", "dokumen yang ada", "file yang ada",
+        "yang sudah saya upload", "yang saya upload", "yang saya unggah", "punya dokumen apa",
+        "punya berapa", "punya file apa", "punya berapa dokumen", "punya berapa file",
+        "ringkasan library", "semua dokumen", "ada apa aja", "ada apa saja", "library saya",
+        "dokumen library", "dokuemn library", "koleksi library", "tunjukan 1", "tunjukkan 1",
+        "ambil 1", "contoh 1", "salah satu dokumen"
+    ]
+    is_meta_query = any(k in norm_q or k in q_lower for k in meta_keywords) and not attachments
+
+    user_docs = storage_mgr.list_user_documents(user_id) if user_id else []
+    top_matches = []
+    focused_doc_title = None
+
+    # Tentukan apakah perlu RAG MyLibrary
+    should_search_library = (
+        grounding_mode in ("auto", "library")
+        and not is_conversational
+        and not is_meta_query
+        and bool(user_docs)
+    )
+
+    if should_search_library and user_id:
+        if focused_doc_id:
+            matched_focus_doc = next((d for d in user_docs if d["id"] == focused_doc_id), None)
+            if matched_focus_doc:
+                focused_doc_title = matched_focus_doc["title"]
+
+        rewritten_data = ai_service.rewrite_query_for_retrieval(question)
+        q_id = rewritten_data.get("rewritten_id", question)
+        norm_q_id = DocumentSearchIndex.normalize_query(q_id)
+
+        user_passages = storage_mgr.get_user_passages(user_id)
+        corpus_passages = []
+        if user_passages:
+            for up in user_passages:
+                corpus_passages.append({
+                    "document_id": up["document_id"],
+                    "document_title": up.get("document_title") or "Dokumen",
+                    "page_number": up["page_number"],
+                    "passage_index": up.get("passage_index", 0),
+                    "passage_text": up.get("passage_text", ""),
+                    "text": up.get("passage_text", ""),
+                    "embedding_json": up.get("embedding_json")
+                })
+        else:
+            for d in user_docs:
+                pages = storage_mgr.get_document_pages(d["id"])
+                for p in pages:
+                    corpus_passages.append({
+                        "document_id": d["id"],
+                        "document_title": d["title"],
+                        "page_number": p["page_number"],
+                        "passage_index": 0,
+                        "passage_text": p["text"],
+                        "text": p["text"],
+                        "embedding_json": None
+                    })
+
+        top_matches = DocumentSearchIndex.search_hybrid(
+            query=norm_q_id,
+            passages_corpus=corpus_passages,
+            top_k=6,
+            candidate_k=20,
+            min_relevance_score=0.05,
+            preferred_document_id=focused_doc_id
+        )
+
+    # Tentukan apakah perlu search jurnal & web (SearchOrchestrator)
+    # auto: jika bukan percakapan/sapaan dan bukan meta-query MyLibrary
+    # academic/web: selalu search
+    should_search_academic = (
+        (grounding_mode in ("academic", "web"))
+        or (grounding_mode == "auto" and not is_conversational and not is_meta_query)
+    )
+
+    academic_results = []
+    if should_search_academic:
+        if hasattr(AcademicRetrieverService.retrieve_academic_evidence, "assert_called"):
+            academic_results = AcademicRetrieverService.retrieve_academic_evidence(question)
+        else:
+            academic_results = run_async_in_sync(
+                search_orchestrator.search(
+                    question=question,
+                    mode=grounding_mode if grounding_mode in ("academic", "web") else "auto"
+                )
+            )
+
+    # Gabungkan structured sources untuk frontend cards
+    structured_sources = []
+    curr_id = 1
+    if academic_results:
+        for ev in academic_results:
+            if hasattr(ev, "result_id"):
+                ev.result_id = curr_id
+            elif isinstance(ev, dict):
+                ev["result_id"] = curr_id
+            structured_sources.append(ev)
+            curr_id += 1
+
+    if top_matches:
+        for m in top_matches:
+            structured_sources.append({
+                "id": curr_id,
+                "title": m.get("document_title") or "Dokumen Rujukan",
+                "url": f"/api/v1/documents/{m.get('document_id')}/preview?page={m.get('page_number', 1)}" if m.get("document_id") else "#",
+                "snippet": m.get("passage_text") or m.get("text") or "",
+                "source_type": "document",
+                "year": 2024,
+                "authors": [],
+                "evidence_level": "document",
+                "document_id": m.get("document_id"),
+                "page_number": m.get("page_number", 1)
+            })
+            curr_id += 1
+
+    return {
+        "is_conversational": is_conversational,
+        "is_meta_query": is_meta_query,
+        "user_docs": user_docs,
+        "top_matches": top_matches,
+        "focused_doc_title": focused_doc_title,
+        "academic_results": academic_results,
+        "structured_sources": structured_sources
+    }
+
 def update_title_in_background(session_id: str, question: str, answer: str):
     try:
         smart_title = ai_service.generate_smart_session_title(question, answer)
@@ -681,129 +856,19 @@ def ask_assistant_stream(
                 "dataUrl": f"data:{p.get('mime_type')};base64,{p.get('base64_data')}" if p.get("is_image") and p.get("base64_data") else None
             })
 
-    user_docs = storage_mgr.list_user_documents(current_user["id"])
-    top_matches = []
-    focused_doc_title = None
-    academic_results = []
-    structured_sources = []
-
-    if request.grounding_mode in ("academic", "web"):
-        chat_history = []
-        if request.session_id:
-            try:
-                prev_msgs = storage_mgr.get_chat_messages(request.session_id)
-                chat_history = prev_msgs[-4:] if prev_msgs else []
-            except Exception:
-                chat_history = []
-        if hasattr(AcademicRetrieverService.retrieve_academic_evidence, "assert_called"):
-            academic_results = AcademicRetrieverService.retrieve_academic_evidence(request.question)
-        else:
-            academic_results = run_async_in_sync(
-                search_orchestrator.search(
-                    question=request.question,
-                    mode=request.grounding_mode
-                )
-            )
-        structured_sources = academic_results
-        for idx, ev in enumerate(academic_results):
-            ev_title = getattr(ev, "title", None) or (ev.get("document_title") if isinstance(ev, dict) else "Sumber Ilmiah")
-            ev_snippet = getattr(ev, "snippet", None) or (ev.get("abstract_snippet") if isinstance(ev, dict) else "")
-            top_matches.append({
-                "document_id": f"academic_{idx}",
-                "document_title": ev_title,
-                "page_number": 1,
-                "passage_index": idx,
-                "passage_text": ev_snippet or "",
-                "text": ev_snippet or "",
-                "academic_item": ev
-            })
-
-    else:
-        norm_q = DocumentSearchIndex.normalize_query(request.question)
-        norm_q_lower = norm_q.lower()
-        q_lower = request.question.lower()
-
-        meta_keywords = [
-            "berapa file", "berapa dokumen", "ada berapa", "apa saja file", "apa saja dokumen",
-            "tentang apa aja", "tentang apa saja", "isi library", "isi perpustakaan",
-            "dalam library", "di library", "dokumen apa", "file apa", "daftar dokumen",
-            "daftar file", "list dokumen", "koleksi saya", "dokumen yang ada", "file yang ada",
-            "yang sudah saya upload", "yang saya upload", "yang saya unggah", "punya dokumen apa",
-            "punya berapa", "punya file apa", "punya berapa dokumen", "punya berapa file",
-            "ringkasan library", "semua dokumen", "ada apa aja", "ada apa saja", "library saya",
-            "dokumen library", "dokuemn library", "koleksi library", "tunjukan 1", "tunjukkan 1",
-            "ambil 1", "contoh 1", "salah satu dokumen"
-        ]
-        is_meta_query = any(k in norm_q_lower or k in q_lower for k in meta_keywords) and not processed_attachments
-
-        words_in_q = set(re.findall(r"\b\w+\b", q_lower))
-        short_greetings = {"halo", "hai", "hello", "hi", "ok", "oke", "sip", "mantap", "makasih", "thanks"}
-        has_short_greeting = bool(short_greetings.intersection(words_in_q))
-        conversational_phrases = [
-            "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
-            "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
-            "siapa yang membuat", "siapa membuat", "siapa pembuat",
-            "siapa pencipta", "siapa penciptamu", "siapa pembuatmu", "siapa developermu", "siapa pengembang",
-            "dibuat oleh siapa", "diciptakan oleh siapa", "siapa yang ciptakan",
-            "siapa yang bikin", "siapa bikin", "siapa yang buat", "siapa buat",
-            "pembuat kamu", "pencipta kamu", "perancang kamu",
-            "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
-            "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
-            "apa itu epiona", "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
-            "apa kabar", "terima kasih", "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
-            "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
-        ]
-        has_phrase = any(phrase in norm_q_lower or phrase in q_lower for phrase in conversational_phrases)
-        is_creator_query = any(w in norm_q_lower or w in q_lower for w in [
-            "menciptakan", "menciptkaan", "ciptakan", "pencipta", "pembuat", "pengembang", "develop"
-        ]) and any(p in norm_q_lower or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
-        is_conversational = (has_short_greeting or has_phrase or is_creator_query) and not processed_attachments
-
-        if not is_conversational and not is_meta_query:
-            if request.focused_document_id:
-                matched_focus_doc = next((d for d in user_docs if d["id"] == request.focused_document_id), None)
-                if matched_focus_doc:
-                    focused_doc_title = matched_focus_doc["title"]
-
-            rewritten_data = ai_service.rewrite_query_for_retrieval(request.question)
-            q_id = rewritten_data.get("rewritten_id", request.question)
-            norm_q_id = DocumentSearchIndex.normalize_query(q_id)
-
-            user_passages = storage_mgr.get_user_passages(current_user["id"])
-            corpus_passages = []
-            if user_passages:
-                for up in user_passages:
-                    corpus_passages.append({
-                        "document_id": up["document_id"],
-                        "document_title": up.get("document_title") or "Dokumen",
-                        "page_number": up["page_number"],
-                        "passage_index": up.get("passage_index", 0),
-                        "passage_text": up.get("passage_text", ""),
-                        "text": up.get("passage_text", ""),
-                        "embedding_json": up.get("embedding_json")
-                    })
-            else:
-                for d in user_docs:
-                    pages = storage_mgr.get_document_pages(d["id"])
-                    for p in pages:
-                        corpus_passages.append({
-                            "document_id": d["id"],
-                            "document_title": d["title"],
-                            "page_number": p["page_number"],
-                            "passage_index": 0,
-                            "passage_text": p["text"],
-                            "text": p["text"],
-                            "embedding_json": None
-                        })
-
-            top_matches = DocumentSearchIndex.search_hybrid(
-                query=norm_q_id,
-                passages_corpus=corpus_passages,
-                top_k=6,
-                candidate_k=20,
-                min_relevance_score=0.05,
-                preferred_document_id=request.focused_document_id
-            )
+    # Auto-Routing Cerdas Terpadu
+    route_info = route_chat_query(
+        question=request.question,
+        grounding_mode=request.grounding_mode or "auto",
+        user_id=current_user["id"],
+        focused_doc_id=request.focused_document_id,
+        attachments=processed_attachments
+    )
+    user_docs = route_info["user_docs"]
+    top_matches = route_info["top_matches"]
+    focused_doc_title = route_info["focused_doc_title"]
+    academic_results = route_info["academic_results"]
+    structured_sources = route_info["structured_sources"]
 
     chat_history = []
     if request.session_id:
@@ -845,23 +910,16 @@ def ask_assistant_stream(
                     yield f"data: {json.dumps({'type': 'sources', 'sources': formatted_sources})}\n\n"
 
             # 2. Generator stream tokens
-            if request.grounding_mode in ("academic", "web") and academic_results:
-                stream_generator = ai_service.stream_academic_chat(
-                    question=request.question,
-                    academic_evidence=academic_results,
-                    chat_history=chat_history,
-                    model_preference=request.model_preference
-                )
-            else:
-                stream_generator = ai_service.stream_chat(
-                    question=request.question,
-                    user_docs=user_docs if request.grounding_mode not in ("academic", "web") else [],
-                    relevant_pages=top_matches,
-                    chat_history=chat_history,
-                    attachments=processed_attachments,
-                    focused_document_title=focused_doc_title,
-                    model_preference=request.model_preference
-                )
+            stream_generator = ai_service.stream_chat(
+                question=request.question,
+                user_docs=user_docs,
+                relevant_pages=top_matches,
+                chat_history=chat_history,
+                attachments=processed_attachments,
+                focused_document_title=focused_doc_title,
+                model_preference=request.model_preference,
+                academic_evidence=academic_results
+            )
 
             for chunk in stream_generator:
                 if chunk.get("type") == "token":
@@ -1014,210 +1072,71 @@ def ask_assistant(
     # 0. Inisialisasi variabel konteks
     top_matches = []
 
-    # Mode Penelusuran Web Akademik (PubMed Central / arXiv / Jurnal Ilmiah Internasional)
-    if request.grounding_mode in ("academic", "web"):
+    # Auto-Routing Cerdas Terpadu
+    route_info = route_chat_query(
+        question=request.question,
+        grounding_mode=request.grounding_mode or "auto",
+        user_id=current_user["id"],
+        focused_doc_id=request.focused_document_id,
+        attachments=processed_attachments
+    )
+    user_docs = route_info["user_docs"]
+    top_matches = route_info["top_matches"]
+    focused_doc_title = route_info["focused_doc_title"]
+    academic_results = route_info["academic_results"]
+    is_meta_query = route_info["is_meta_query"]
+
+    if is_meta_query:
+        docs_summary = []
+        for d in user_docs:
+            d_pages = storage_mgr.get_document_pages(d["id"])
+            sample_text = ""
+            if d_pages:
+                sample_text = "\n".join([p.get("text", "") for p in d_pages[:3]])
+            docs_summary.append({
+                "id": d["id"],
+                "title": d["title"],
+                "filename": d.get("filename", ""),
+                "total_pages": d.get("total_pages", len(d_pages)),
+                "sample_text": sample_text
+            })
+        chat_result = ai_service.generate_library_overview(request.question, docs_summary)
+        top_matches = []
+        q_lower = request.question.lower()
+        if any(w in q_lower for w in ["tunjukan", "tunjukkan", "contoh", "ambil 1", "tunjukan 1", "tunjukkan 1"]) and user_docs:
+            top_matches = [{
+                "document_id": user_docs[0]["id"],
+                "document_title": user_docs[0]["title"],
+                "page_number": 1,
+                "text": docs_summary[0].get("sample_text", "")
+            }]
+    else:
         chat_history = []
         if request.session_id:
             try:
                 prev_msgs = storage_mgr.get_chat_messages(request.session_id)
-                chat_history = prev_msgs[-4:] if prev_msgs else []
+                chat_history = prev_msgs[-10:] if prev_msgs else []
             except Exception:
                 chat_history = []
 
-        # Ambil naskah via SearchOrchestrator (PubMed, Semantic Scholar, Europe PMC, openFDA, Tavily)
-        if hasattr(AcademicRetrieverService.retrieve_academic_evidence, "assert_called"):
-            academic_evidence = AcademicRetrieverService.retrieve_academic_evidence(request.question)
-        else:
-            academic_evidence = run_async_in_sync(
-                search_orchestrator.search(
-                    question=request.question,
-                    mode=request.grounding_mode
-                )
-            )
-        chat_result = ai_service.answer_academic_chat(
+        chat_result = ai_service.answer_chat(
             question=request.question,
-            academic_evidence=academic_evidence,
+            user_docs=user_docs,
+            relevant_pages=top_matches,
             chat_history=chat_history,
-            model_preference=request.model_preference
+            attachments=processed_attachments,
+            focused_document_title=focused_doc_title,
+            model_preference=request.model_preference,
+            academic_evidence=academic_results
         )
+
         # Verifikasi klaim faktual (Claim Verification - P3-1)
-        if academic_evidence and not chat_result.is_error:
+        if academic_results and not chat_result.is_error:
             verified_answer, _ = ClaimChecker.verify_answer_claims(
                 answer=chat_result.answer,
-                sources=academic_evidence
+                sources=academic_results
             )
             chat_result.answer = verified_answer
-    else:
-        user_docs = storage_mgr.list_user_documents(current_user["id"])
-        norm_q = DocumentSearchIndex.normalize_query(request.question)
-        norm_q_lower = norm_q.lower()
-        q_lower = request.question.lower()
-
-        # 1. Deteksi Library Meta-Query (Pertanyaan seputar inventaris / daftar / isi koleksi MyLibrary)
-        meta_keywords = [
-            "berapa file", "berapa dokumen", "ada berapa", "apa saja file", "apa saja dokumen",
-            "tentang apa aja", "tentang apa saja", "isi library", "isi perpustakaan",
-            "dalam library", "di library", "dokumen apa", "file apa", "daftar dokumen",
-            "daftar file", "list dokumen", "koleksi saya", "dokumen yang ada", "file yang ada",
-            "yang sudah saya upload", "yang saya upload", "yang saya unggah", "punya dokumen apa",
-            "punya berapa", "punya file apa", "punya berapa dokumen", "punya berapa file",
-            "ringkasan library", "semua dokumen", "ada apa aja", "ada apa saja", "library saya",
-            "dokumen library", "dokuemn library", "koleksi library", "tunjukan 1", "tunjukkan 1",
-            "ambil 1", "contoh 1", "salah satu dokumen"
-        ]
-        is_meta_query = any(k in norm_q_lower or k in q_lower for k in meta_keywords) and not processed_attachments
-
-        if is_meta_query:
-            docs_summary = []
-            for d in user_docs:
-                d_pages = storage_mgr.get_document_pages(d["id"])
-                sample_text = ""
-                if d_pages:
-                    sample_text = "\n".join([p.get("text", "") for p in d_pages[:3]])
-                docs_summary.append({
-                    "id": d["id"],
-                    "title": d["title"],
-                    "filename": d.get("filename", ""),
-                    "total_pages": d.get("total_pages", len(d_pages)),
-                    "sample_text": sample_text
-                })
-            chat_result = ai_service.generate_library_overview(request.question, docs_summary)
-            top_matches = []
-            if any(w in q_lower for w in ["tunjukan", "tunjukkan", "contoh", "ambil 1", "tunjukan 1", "tunjukkan 1"]) and user_docs:
-                top_matches = [{
-                    "document_id": user_docs[0]["id"],
-                    "document_title": user_docs[0]["title"],
-                    "page_number": 1,
-                    "text": docs_summary[0].get("sample_text", "")
-                }]
-        else:
-            norm_q = DocumentSearchIndex.normalize_query(request.question)
-            norm_q_lower = norm_q.lower()
-
-            # Fast-Path Percakapan, Identitas & Sapaan Umum: Hindari query database yang tidak perlu
-            words_in_q = set(re.findall(r"\b\w+\b", q_lower))
-            short_greetings = {"halo", "hai", "hello", "hi", "ok", "oke", "sip", "mantap", "makasih", "thanks"}
-            has_short_greeting = bool(short_greetings.intersection(words_in_q))
-
-            conversational_phrases = [
-                "siapa kamu", "siapa anda", "identitas kamu", "kamu siapa", "perkenalkan dirimu",
-                "siapa yang menciptakan", "siapa menciptakan", "siapa yang menciptkaan", "siapa menciptkaan",
-                "menciptkaan", "siapa yang membuat", "siapa membuat", "siapa pembuat",
-                "siapa pencipta", "siapa penciptamu", "siapa pembuatmu", "siapa developermu", "siapa pengembang",
-                "dibuat oleh siapa", "diciptakan oleh siapa", "siapa yang ciptakan",
-                "siapa yang bikin", "siapa bikin", "siapa yang buat", "siapa buat",
-                "pembuat kamu", "pencipta kamu", "perancang kamu",
-                "tugas kamu apa", "apa tugas kamu", "bisa apa saja", "kamu bisa apa",
-                "apa fungsi kamu", "apa yang bisa kamu lakukan", "kemampuan kamu", "kemampuanmu apa",
-                "apa itu epiona", "selamat pagi", "selamat siang", "selamat sore", "selamat malam",
-                "apa kabar", "terima kasih",
-                "tujuannya apa", "tujuan kamu", "kenapa kamu dibuat",
-                "jelaskan siapa", "ceritakan tentangmu", "siapakah kamu", "siapa sih kamu"
-            ]
-            has_phrase = any(phrase in norm_q_lower or phrase in q_lower for phrase in conversational_phrases)
-
-            is_creator_query = any(w in norm_q_lower or w in q_lower for w in [
-                "menciptakan", "menciptkaan", "ciptakan", "pencipta", "pembuat", "pengembang", "develop"
-            ]) and any(p in norm_q_lower or p in q_lower for p in ["kamu", "anda", "epiona", "sistem", "ai", "bot", "dirimu", "siapa"])
-
-            is_conversational = (
-                (has_short_greeting or has_phrase or is_creator_query)
-                and not processed_attachments
-            )
-
-            top_matches = []
-            focused_doc_title = None
-            if not is_conversational:
-                # Opsi A: RAG Cerdas Terpadu Lintas Seluruh Modul MyLibrary
-                if request.focused_document_id:
-                    matched_focus_doc = next((d for d in user_docs if d["id"] == request.focused_document_id), None)
-                    if matched_focus_doc:
-                        focused_doc_title = matched_focus_doc["title"]
-
-                # Item 3: Query rewriting (Claude Haiku / model murah via gateway)
-                rewritten_data = ai_service.rewrite_query_for_retrieval(request.question)
-                q_id = rewritten_data.get("rewritten_id", request.question)
-                q_en = rewritten_data.get("rewritten_en", request.question)
-                norm_q_id = DocumentSearchIndex.normalize_query(q_id)
-
-                # Ambil korpus passages tersimpan dari database (Multi-Tenant Isolation)
-                user_passages = storage_mgr.get_user_passages(current_user["id"])
-                corpus_passages = []
-                if user_passages:
-                    for up in user_passages:
-                        corpus_passages.append({
-                            "document_id": up["document_id"],
-                            "document_title": up.get("document_title") or "Dokumen",
-                            "page_number": up["page_number"],
-                            "passage_index": up.get("passage_index", 0),
-                            "passage_text": up.get("passage_text", ""),
-                            "text": up.get("passage_text", ""),
-                            "embedding_json": up.get("embedding_json")
-                        })
-                else:
-                    # Fallback on-the-fly jika dokumen diunggah sebelum tabel passages diisi
-                    for d in user_docs:
-                        pages = storage_mgr.get_document_pages(d["id"])
-                        for p in pages:
-                            corpus_passages.append({
-                                "document_id": d["id"],
-                                "document_title": d["title"],
-                                "page_number": p["page_number"],
-                                "passage_index": 0,
-                                "passage_text": p["text"],
-                                "text": p["text"],
-                                "embedding_json": None
-                            })
-
-                # Item 1 & 2: Retrieval Hybrid (BM25 + Vektor BAAI/bge-m3 via RRF + Reranker opsional)
-                top_matches = DocumentSearchIndex.search_hybrid(
-                    query=norm_q_id,
-                    passages_corpus=corpus_passages,
-                    top_k=6,
-                    candidate_k=20,
-                    min_relevance_score=0.05,
-                    preferred_document_id=request.focused_document_id
-                )
-
-                # Jika kueri bahasa Inggris berbeda dan hasil masih sedikit (< 3), cari juga dengan kueri EN lalu fusi RRF
-                if len(top_matches) < 3 and q_en and q_en.lower() != norm_q_id.lower():
-                    norm_q_en = DocumentSearchIndex.normalize_query(q_en)
-                    en_matches = DocumentSearchIndex.search_hybrid(
-                        query=norm_q_en,
-                        passages_corpus=corpus_passages,
-                        top_k=6,
-                        candidate_k=20,
-                        min_relevance_score=0.05,
-                        preferred_document_id=request.focused_document_id
-                    )
-                    if en_matches:
-                        top_matches = DocumentSearchIndex.reciprocal_rank_fusion(
-                            [top_matches, en_matches],
-                            k=60,
-                            top_k=6
-                        )
-
-                # Item 5 Anti-Halusinasi: Fallback afinitas judul (mengirim halaman 1 paksa) DIHAPUS TOTAL.
-                # Bila tidak ada kecocokan dokumen di atas ambang batas, top_matches tetap kosong []
-                # sehingga ai_service akan menjawab secara jujur dan tegas bahwa dokumen tidak memuat jawabannya.
-
-            chat_history = []
-            if request.session_id:
-                try:
-                    prev_msgs = storage_mgr.get_chat_messages(request.session_id)
-                    chat_history = prev_msgs[-10:] if prev_msgs else []
-                except Exception:
-                    chat_history = []
-
-            chat_result = ai_service.answer_chat(
-                question=request.question,
-                user_docs=user_docs,
-                relevant_pages=top_matches,
-                chat_history=chat_history,
-                attachments=processed_attachments,
-                focused_document_title=focused_doc_title,
-                model_preference=request.model_preference
-            )
 
     # Kesadaran Visual AI (Visual Awareness & Selective Grounding):
     # Gambar HANYA dilampirkan jika:

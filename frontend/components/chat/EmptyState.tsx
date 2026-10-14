@@ -40,6 +40,12 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   onPreviewImage,
 }) => {
   const suggestionsByMode: Record<GroundingMode, string[]> = {
+    auto: [
+      "Bagaimana mekanisme kerja amlodipine dan efek samping utamanya?",
+      "Jelaskan konsep Volume of Distribution (Vd) dengan analogi mudah",
+      "Apakah ada interaksi antara warfarin dan paracetamol?",
+      "Rangkum temuan penting dari dokumen yang saya unggah",
+    ],
     library: [
       "Rangkum mekanisme kerja obat di dokumen saya",
       "Bandingkan bioavailabilitas sediaan tablet vs sirup",
